@@ -101,7 +101,9 @@ def eval_adv_test_whitebox(model, device, loader):
             step_size=args.step_size,
             random_start=args.random
         )
-
+      
+        print('err pgd (white-box): ', torch.tensor(err_pgd, device=device))
+      
         natural_err_total += err_nat
         robust_err_total += err_pgd
         total += data.size(0)
