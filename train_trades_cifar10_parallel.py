@@ -19,6 +19,13 @@ ANIMAL_CLASSES  = [2, 3, 4, 5, 6, 7]    # bird, cat, deer, dog, frog, horse
 
 
 # =========================================================
+# CIFAR-10 Normalize 
+# =========================================================
+CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
+CIFAR10_STD  = (0.2023, 0.1994, 0.2010)
+
+
+# =========================================================
 # Dataset wrapper
 # =========================================================
 class CIFARSubset(torch.utils.data.Dataset):
@@ -40,6 +47,21 @@ class CIFARSubset(torch.utils.data.Dataset):
     def __getitem__(self, i):
         x, y = self.base[self.idx[i]]
         return x, self.map[y]
+
+
+# =========================================================
+# BN freeze util (Stage 2 only)
+# =========================================================
+def freeze_bn(model: torch.nn.Module):
+    """
+    Freeze all BatchNorm layers: stop updating running_mean/var and keep affine params fixed.
+    This matches common robust-training practice to avoid BN stats being poisoned by adversarial examples.
+    """
+    for m in model.modules():
+        if isinstance(m, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d)):
+            m.eval()
+            for p in m.parameters():
+                p.requires_grad = False
 
 
 # =========================================================
@@ -90,7 +112,7 @@ def train_ce_epoch(model, loader, optimizer, device):
 
 def train_trades_epoch(model, loader, optimizer, device,
                        epsilon, num_steps, step_size, beta):
-    """Train one epoch with TRADES and return avg loss & clean acc"""
+    """Train one epoch with TRADES and return avg loss & clean acc (on natural x)"""
     model.train()
     total_loss = 0.0
     correct = 0
@@ -116,6 +138,7 @@ def train_trades_epoch(model, loader, optimizer, device,
 
         total_loss += loss.item() * x.size(0)
 
+        # clean accuracy on natural examples
         with torch.no_grad():
             logits = model(x)
             pred = logits.argmax(dim=1)
@@ -132,11 +155,12 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.model_dir, exist_ok=True)
 
-    # Data augmentation identical to TRADES
+    # Data augmentation identical to TRADES + Normalize (added)
     transform = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
-        transforms.ToTensor()
+        transforms.ToTensor(),
+        transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
     ])
 
     base_train = torchvision.datasets.CIFAR10(
@@ -198,9 +222,12 @@ def main():
     torch.save(m6.state_dict(), f'{args.model_dir}/wrn6_final.pt')
 
     # =====================================================
-    # Stage 2: TRADES training for fusion model
+    # Stage 2: TRADES training for fusion model (Freeze BN)
     # =====================================================
     fusion = ParallelFusionWRN(m4, m6).to(device)
+
+    # Freeze BN for Stage 2 only
+    freeze_bn(fusion)
 
     optimizer_fusion = optim.SGD(
         filter(lambda p: p.requires_grad, fusion.parameters()),
@@ -209,7 +236,7 @@ def main():
         weight_decay=args.weight_decay
     )
 
-    print('==== Stage 2: TRADES training for fusion model ====')
+    print('==== Stage 2: TRADES training for fusion model (Freeze BN) ====')
     for epoch in range(1, args.epochs_fusion + 1):
         loss, acc = train_trades_epoch(
             fusion,
