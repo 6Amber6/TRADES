@@ -2,13 +2,12 @@ from __future__ import print_function
 import os
 import argparse
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import torch.optim as optim
 from torchvision import transforms
 
-from models.wideresnet_update import WideResNet
+from models.parallel_wrn import WRNWithEmbedding, ParallelFusionWRN
 from trades import trades_loss
 
 
@@ -20,12 +19,11 @@ ANIMAL_CLASSES  = [2, 3, 4, 5, 6, 7]    # bird, cat, deer, dog, frog, horse
 
 
 # =========================================================
-# Dataset wrapper 
+# Dataset wrapper
 # =========================================================
 class CIFARSubset(torch.utils.data.Dataset):
     def __init__(self, base_dataset, keep_classes):
         self.base = base_dataset
-        self.keep = keep_classes
         self.map = {c: i for i, c in enumerate(keep_classes)}
 
         targets = torch.tensor(self.base.targets)
@@ -45,55 +43,11 @@ class CIFARSubset(torch.utils.data.Dataset):
 
 
 # =========================================================
-# WRN with explicit embedding 
-# =========================================================
-class WRNWithEmbedding(WideResNet):
-    def forward(self, x, return_embedding=False):
-        out = self.conv1(x)
-        out = self.block1(out)
-        out = self.block2(out)
-        out = self.block3(out)
-        out = self.relu(self.bn1(out))
-        out = F.avg_pool2d(out, 8)
-        emb = out.view(out.size(0), -1)   # penultimate embedding (640-d)
-        logits = self.fc(emb)
-        if return_embedding:
-            return emb, logits
-        return logits
-
-
-# =========================================================
-# Parallel fusion model
-# =========================================================
-class ParallelFusionWRN(nn.Module):
-    def __init__(self, model4, model6):
-        super().__init__()
-        self.m4 = model4
-        self.m6 = model6
-
-        # freeze backbones
-        for p in self.m4.parameters():
-            p.requires_grad = False
-        for p in self.m6.parameters():
-            p.requires_grad = False
-
-        self.fc = nn.Linear(640 * 2, 10)
-
-    def forward(self, x):
-        e4, _ = self.m4(x, return_embedding=True)
-        e6, _ = self.m6(x, return_embedding=True)
-        emb = torch.cat([e4, e6], dim=1)
-        return self.fc(emb)
-
-
-# =========================================================
 # Arguments (STRICTLY aligned with TRADES baseline)
 # =========================================================
-parser = argparse.ArgumentParser()
-parser.add_argument('--epochs-sub', type=int, default=100,
-                    help='epochs for 4/6-class submodels')
-parser.add_argument('--epochs-fusion', type=int, default=100,
-                    help='epochs for fusion model (TRADES)')
+parser = argparse.ArgumentParser(description='TRADES Parallel WRN Training')
+parser.add_argument('--epochs-sub', type=int, default=100)
+parser.add_argument('--epochs-fusion', type=int, default=100)
 parser.add_argument('--batch-size', type=int, default=128)
 parser.add_argument('--lr', type=float, default=0.1)
 parser.add_argument('--momentum', type=float, default=0.9)
@@ -126,7 +80,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.model_dir, exist_ok=True)
 
-    # data augmentation identical to TRADES
+    # Data augmentation identical to TRADES
     transform = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
@@ -165,7 +119,7 @@ def main():
     )
 
     # =====================================================
-    # Stage 1: train 4-class & 6-class submodels (CE only)
+    # Stage 1: Train 4-class & 6-class submodels (CE)
     # =====================================================
     m4 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=4).to(device)
     m6 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=6).to(device)
@@ -220,7 +174,6 @@ def main():
             optimizer_fusion.step()
 
         print(f'[Fusion/TRADES] Epoch {epoch}/{args.epochs_fusion}')
-
         torch.save(
             fusion.state_dict(),
             f'{args.model_dir}/fusion-epoch{epoch}.pt'
