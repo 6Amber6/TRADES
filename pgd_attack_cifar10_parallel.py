@@ -7,7 +7,7 @@ import torch.optim as optim
 from torch.autograd import Variable
 from torchvision import transforms
 
-from train_trades_cifar10_parallel import WRNWithEmbedding, ParallelFusionWRN
+from models.parallel_wrn import WRNWithEmbedding, ParallelFusionWRN
 
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR PGD White-box Attack (Parallel Fusion)')
@@ -16,12 +16,17 @@ parser.add_argument('--test-batch-size', type=int, default=200, metavar='N',
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
 
-# MUST match TRADES eval settings you gave
+# MUST match TRADES eval settings
 parser.add_argument('--epsilon', type=float, default=0.031)
 parser.add_argument('--num-steps', type=int, default=20)
 parser.add_argument('--step-size', type=float, default=0.003)
-parser.add_argument('--random', default=True,
-                    help='random initialization for PGD')
+
+# Use explicit store_true/store_false to avoid bool() pitfalls
+parser.add_argument('--random', action='store_true',
+                    help='use random initialization for PGD (default: False)')
+parser.add_argument('--no-random', dest='random', action='store_false',
+                    help='disable random initialization for PGD')
+parser.set_defaults(random=True)
 
 # checkpoints
 parser.add_argument('--model-path', required=True,
@@ -94,21 +99,21 @@ def eval_adv_test_whitebox(model, device, loader):
             epsilon=args.epsilon,
             num_steps=args.num_steps,
             step_size=args.step_size,
-            random_start=bool(args.random)
+            random_start=args.random
         )
 
         natural_err_total += err_nat
         robust_err_total += err_pgd
         total += data.size(0)
 
-    print('natural_err_total:', natural_err_total, ' / ', total)
-    print('robust_err_total:', robust_err_total, ' / ', total)
+    print('natural_err_total:', natural_err_total, '/', total)
+    print('robust_err_total:', robust_err_total, '/', total)
     print('natural_err_rate:', natural_err_total / total)
     print('robust_err_rate:', robust_err_total / total)
 
 
 def main():
-    # build model exactly as training
+    # build models exactly as training
     m4 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=4).to(device)
     m6 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=6).to(device)
 
