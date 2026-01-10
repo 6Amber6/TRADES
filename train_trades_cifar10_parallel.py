@@ -64,13 +64,65 @@ args = parser.parse_args()
 # Training utilities
 # =========================================================
 def train_ce_epoch(model, loader, optimizer, device):
+    """Train one epoch with cross-entropy and return avg loss & acc"""
     model.train()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+
     for x, y in loader:
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
-        loss = F.cross_entropy(model(x), y)
+
+        logits = model(x)
+        loss = F.cross_entropy(logits, y)
+
         loss.backward()
         optimizer.step()
+
+        total_loss += loss.item() * x.size(0)
+        pred = logits.argmax(dim=1)
+        correct += (pred == y).sum().item()
+        total += x.size(0)
+
+    return total_loss / total, correct / total
+
+
+def train_trades_epoch(model, loader, optimizer, device,
+                       epsilon, num_steps, step_size, beta):
+    """Train one epoch with TRADES and return avg loss & clean acc"""
+    model.train()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        optimizer.zero_grad()
+
+        loss = trades_loss(
+            model=model,
+            x_natural=x,
+            y=y,
+            optimizer=optimizer,
+            step_size=step_size,
+            epsilon=epsilon,
+            perturb_steps=num_steps,
+            beta=beta
+        )
+
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item() * x.size(0)
+
+        with torch.no_grad():
+            logits = model(x)
+            pred = logits.argmax(dim=1)
+            correct += (pred == y).sum().item()
+            total += x.size(0)
+
+    return total_loss / total, correct / total
 
 
 # =========================================================
@@ -119,7 +171,7 @@ def main():
     )
 
     # =====================================================
-    # Stage 1: Train 4-class & 6-class submodels (CE)
+    # Stage 1: Train 4-class & 6-class submodels
     # =====================================================
     m4 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=4).to(device)
     m6 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=6).to(device)
@@ -133,9 +185,14 @@ def main():
 
     print('==== Stage 1: Training 4-class and 6-class submodels ====')
     for epoch in range(1, args.epochs_sub + 1):
-        train_ce_epoch(m4, train_loader_4, opt4, device)
-        train_ce_epoch(m6, train_loader_6, opt6, device)
-        print(f'[Submodels] Epoch {epoch}/{args.epochs_sub}')
+        loss4, acc4 = train_ce_epoch(m4, train_loader_4, opt4, device)
+        loss6, acc6 = train_ce_epoch(m6, train_loader_6, opt6, device)
+
+        print(
+            f'[Submodels][Epoch {epoch}/{args.epochs_sub}] '
+            f'WRN-4: loss={loss4:.4f}, acc={acc4*100:.2f}% | '
+            f'WRN-6: loss={loss6:.4f}, acc={acc6*100:.2f}%'
+        )
 
     torch.save(m4.state_dict(), f'{args.model_dir}/wrn4_final.pt')
     torch.save(m6.state_dict(), f'{args.model_dir}/wrn6_final.pt')
@@ -154,26 +211,22 @@ def main():
 
     print('==== Stage 2: TRADES training for fusion model ====')
     for epoch in range(1, args.epochs_fusion + 1):
-        fusion.train()
-        for x, y in train_loader_10:
-            x, y = x.to(device), y.to(device)
-            optimizer_fusion.zero_grad()
+        loss, acc = train_trades_epoch(
+            fusion,
+            train_loader_10,
+            optimizer_fusion,
+            device,
+            epsilon=args.epsilon,
+            num_steps=args.num_steps,
+            step_size=args.step_size,
+            beta=args.beta
+        )
 
-            loss = trades_loss(
-                model=fusion,
-                x_natural=x,
-                y=y,
-                optimizer=optimizer_fusion,
-                step_size=args.step_size,
-                epsilon=args.epsilon,
-                perturb_steps=args.num_steps,
-                beta=args.beta
-            )
+        print(
+            f'[Fusion/TRADES][Epoch {epoch}/{args.epochs_fusion}] '
+            f'loss={loss:.4f}, acc={acc*100:.2f}%'
+        )
 
-            loss.backward()
-            optimizer_fusion.step()
-
-        print(f'[Fusion/TRADES] Epoch {epoch}/{args.epochs_fusion}')
         torch.save(
             fusion.state_dict(),
             f'{args.model_dir}/fusion-epoch{epoch}.pt'
