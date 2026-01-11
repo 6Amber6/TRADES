@@ -187,8 +187,18 @@ def eval_adv_test_whitebox(model, loader):
 # Main
 # =========================================================
 def main():
-    m4 = WRNWithEmbedding(34, 10, 4).to(device)
-    m6 = WRNWithEmbedding(34, 10, 6).to(device)
+    m4 = WRNWithEmbedding(
+        depth=34,
+        widen_factor=10,
+        num_classes=4
+    ).to(device)
+
+    m6 = WRNWithEmbedding(
+        depth=34,
+        widen_factor=10,
+        num_classes=6
+    ).to(device)
+
 
     m4.load_state_dict(torch.load(args.wrn4_path, map_location=device))
     m6.load_state_dict(torch.load(args.wrn6_path, map_location=device))
