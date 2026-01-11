@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 import torchvision
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 from torchvision import transforms
 
 from models.parallel_wrn import WRNWithEmbedding, ParallelFusionWRN
@@ -70,7 +70,7 @@ class CIFARSubset(torch.utils.data.Dataset):
 
 
 # =========================================================
-# BN freeze util
+# BN freeze/unfreeze util
 # =========================================================
 def freeze_bn(model):
     for m in model.modules():
@@ -78,6 +78,13 @@ def freeze_bn(model):
             m.eval()
             for p in m.parameters():
                 p.requires_grad = False
+
+def unfreeze_bn(model):
+    for m in model.modules():
+        if isinstance(m, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d)):
+            m.train()
+            for p in m.parameters():
+                p.requires_grad = True
 
 
 # =========================================================
@@ -159,6 +166,8 @@ def main():
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
+        # Add RandomErasing for better regularization (like previous code)
+        transforms.RandomErasing(p=0.5, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0),
     ])
 
     base_train = torchvision.datasets.CIFAR10(
@@ -200,10 +209,26 @@ def main():
 
     # ================= Stage 2 =================
     fusion = ParallelFusionWRN(m4, m6).to(device)
-
+    
+    # Enable training for submodels with smaller learning rate (like previous code)
+    # This is crucial for better accuracy - backbone should adapt slightly
+    for p in fusion.m4.parameters():
+        p.requires_grad = True
+    for p in fusion.m6.parameters():
+        p.requires_grad = True
+    
+    # Use different learning rates: fusion layer gets full lr, backbones get lr*0.2
+    params = [
+        {'params': fusion.fc.parameters(), 'lr': args.lr},
+        {'params': fusion.m4.parameters(), 'lr': args.lr * 0.2},
+        {'params': fusion.m6.parameters(), 'lr': args.lr * 0.2},
+    ]
+    
     optimizer = optim.SGD(
-        filter(lambda p: p.requires_grad, fusion.parameters()),
-        lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay
+        params,
+        momentum=args.momentum,
+        weight_decay=args.weight_decay,
+        nesterov=True  # Use Nesterov momentum like previous code
     )
 
     ema = EMA(fusion, decay=0.999)
@@ -221,6 +246,8 @@ def main():
             loss = F.cross_entropy(out, y)
 
             loss.backward()
+            # Gradient clipping for stability
+            torch.nn.utils.clip_grad_norm_(fusion.parameters(), 5.0)
             optimizer.step()
             ema.update(fusion)
 
@@ -229,12 +256,14 @@ def main():
     # -------- Freeze BN AFTER warmup --------
     freeze_bn(fusion)
 
-    # -------- TRADES training with Cosine Annealing LR --------
-    # Cosine annealing: smoothly decay from lr to lr*0.01 over fusion training epochs
-    # This is better for frozen BN scenario compared to step decay
-    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs_fusion, eta_min=args.lr * 0.01)
+    # -------- TRADES training with MultiStepLR (like previous code) --------
+    # MultiStepLR is more stable than CosineAnnealingLR for this scenario
+    # Decay at 50% and 75% of training
+    milestones = [args.epochs_fusion // 2, int(args.epochs_fusion * 0.75)]
+    scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
     
     print('==== TRADES training ====')
+    bn_unfrozen = False
     for ep in range(1, args.epochs_fusion + 1):
         fusion.train()
         total, correct = 0, 0
@@ -258,6 +287,8 @@ def main():
             loss += aux_ce_loss(out4, out6, y, device)
 
             loss.backward()
+            # Gradient clipping for stability
+            torch.nn.utils.clip_grad_norm_(fusion.parameters(), 5.0)
             optimizer.step()
             ema.update(fusion)
 
@@ -266,6 +297,13 @@ def main():
                 correct += (pred == y).sum().item()
                 total += y.size(0)
 
+        # Unfreeze BN after 40 TRADES epochs (like previous code)
+        # This allows BN stats to adapt to adversarial training
+        if not bn_unfrozen and ep >= 40:
+            unfreeze_bn(fusion)
+            bn_unfrozen = True
+            print(f'[INFO] Unfroze BN at epoch {ep}')
+        
         # Update learning rate
         scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']
