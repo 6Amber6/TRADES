@@ -64,6 +64,18 @@ def _cifar_bounds(device_):
     return low, high, std
 
 
+def get_logits(model, x):
+    """
+    Support both:
+      - logits
+      - (logits4, logits6, fusion_logits)
+    """
+    out = model(x)
+    if isinstance(out, (tuple, list)):
+        return out[-1]
+    return out
+
+
 # data loader (match training: ToTensor + Normalize)
 transform_test = transforms.Compose([
     transforms.ToTensor(),
@@ -85,8 +97,8 @@ def pgd_whitebox(model, X, y, epsilon, num_steps, step_size, random_start=True):
     eps = epsilon / std
     step = step_size / std
 
-    out = model(X)
-    err = (out.data.max(1)[1] != y.data).float().sum()
+    logits = get_logits(model, X)
+    err = (logits.data.max(1)[1] != y.data).float().sum()
 
     X_pgd = Variable(X.data, requires_grad=True)
 
@@ -101,7 +113,7 @@ def pgd_whitebox(model, X, y, epsilon, num_steps, step_size, random_start=True):
         opt.zero_grad()
 
         with torch.enable_grad():
-            loss = nn.CrossEntropyLoss()(model(X_pgd), y)
+            loss = nn.CrossEntropyLoss()(get_logits(model, X_pgd), y)
         loss.backward()
 
         eta = step * X_pgd.grad.data.sign()
@@ -114,7 +126,7 @@ def pgd_whitebox(model, X, y, epsilon, num_steps, step_size, random_start=True):
         # clamp to valid normalized bounds
         X_pgd = Variable(torch.max(torch.min(X_pgd, high), low), requires_grad=True)
 
-    err_pgd = (model(X_pgd).data.max(1)[1] != y.data).float().sum()
+    err_pgd = (get_logits(model, X_pgd).data.max(1)[1] != y.data).float().sum()
     print('err pgd (white-box): ', err_pgd)
     return err, err_pgd
 

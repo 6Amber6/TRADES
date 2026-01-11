@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 import torchvision
 import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchvision import transforms
 
 from models.parallel_wrn import WRNWithEmbedding, ParallelFusionWRN
@@ -232,6 +233,7 @@ def main():
 
     # -------- CE warmup (10 epochs, BN NOT frozen) --------
     print('==== Stage 2: CE warmup (10 epochs) ====')
+    # Keep constant LR during warmup
     for ep in range(1, 11):
         fusion.train()
         for x, y in train_loader_10:
@@ -243,12 +245,17 @@ def main():
             loss.backward()
             optimizer_fusion.step()
 
-        print(f'[Warmup][Epoch {ep}/10]')
+        current_lr = optimizer_fusion.param_groups[0]['lr']
+        print(f'[Warmup][Epoch {ep}/10], lr={current_lr:.6f}')
 
     # -------- Freeze BN AFTER warmup --------
     freeze_bn(fusion)
 
-    # -------- TRADES training --------
+    # -------- TRADES training with Cosine Annealing LR --------
+    # Cosine annealing: smoothly decay from lr to lr*0.01 over fusion training epochs
+    # This is better for frozen BN scenario compared to step decay
+    scheduler = CosineAnnealingLR(optimizer_fusion, T_max=args.epochs_fusion, eta_min=args.lr * 0.01)
+    
     print('==== Stage 2: TRADES training (Freeze BN) ====')
     for epoch in range(1, args.epochs_fusion + 1):
         loss, acc = train_trades_epoch(
@@ -262,9 +269,13 @@ def main():
             beta=args.beta
         )
 
+        # Update learning rate
+        scheduler.step()
+        current_lr = optimizer_fusion.param_groups[0]['lr']
+
         print(
             f'[Fusion/TRADES][Epoch {epoch}/{args.epochs_fusion}] '
-            f'loss={loss:.4f}, acc={acc*100:.2f}%'
+            f'loss={loss:.4f}, acc={acc*100:.2f}%, lr={current_lr:.6f}'
         )
 
         torch.save(
