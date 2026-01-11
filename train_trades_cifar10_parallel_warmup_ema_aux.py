@@ -215,9 +215,8 @@ def main():
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
 
-            out4, out6, out = fusion(x, return_aux=True)
+            out = fusion(x)
             loss = F.cross_entropy(out, y)
-            loss += aux_ce_loss(out4, out6, y, device)
 
             loss.backward()
             optimizer.step()
