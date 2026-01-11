@@ -215,7 +215,7 @@ def main():
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
 
-            out4, out6, out = fusion(x)
+            out4, out6, out = fusion(x, return_aux=True)
             loss = F.cross_entropy(out, y)
             loss += aux_ce_loss(out4, out6, y, device)
 
@@ -249,7 +249,7 @@ def main():
                 beta=args.beta
             )
 
-            out4, out6, _ = fusion(x)
+            out4, out6, _ = fusion(x, return_aux=True)
             loss += aux_ce_loss(out4, out6, y, device)
 
             loss.backward()
@@ -257,7 +257,7 @@ def main():
             ema.update(fusion)
 
             with torch.no_grad():
-                pred = fusion(x)[-1].argmax(1)
+                pred = fusion(x, return_aux=True)[-1].argmax(1)
                 correct += (pred == y).sum().item()
                 total += y.size(0)
 

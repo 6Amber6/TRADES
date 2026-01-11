@@ -32,8 +32,11 @@ class ParallelFusionWRN(nn.Module):
 
         self.fc = nn.Linear(640 * 2, 10)
 
-    def forward(self, x):
-        e4, _ = self.m4(x, return_embedding=True)
-        e6, _ = self.m6(x, return_embedding=True)
+    def forward(self, x, return_aux=False):
+        e4, out4 = self.m4(x, return_embedding=True)
+        e6, out6 = self.m6(x, return_embedding=True)
         emb = torch.cat([e4, e6], dim=1)
-        return self.fc(emb)
+        out = self.fc(emb)
+        if return_aux:
+            return out4, out6, out
+        return out
