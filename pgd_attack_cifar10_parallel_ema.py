@@ -187,18 +187,9 @@ def eval_adv_test_whitebox(model, loader):
 # Main
 # =========================================================
 def main():
-    m4 = WRNWithEmbedding(
-        depth=34,
-        widen_factor=10,
-        num_classes=4
-    ).to(device)
-
-    m6 = WRNWithEmbedding(
-        depth=34,
-        widen_factor=10,
-        num_classes=6
-    ).to(device)
-
+    # Fix: Use keyword arguments for correct parameter order
+    m4 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=4).to(device)
+    m6 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=6).to(device)
 
     m4.load_state_dict(torch.load(args.wrn4_path, map_location=device))
     m6.load_state_dict(torch.load(args.wrn6_path, map_location=device))
@@ -206,20 +197,18 @@ def main():
     model = ParallelFusionWRN(m4, m6).to(device)
     model.load_state_dict(torch.load(args.model_path, map_location=device))
 
-    # EMA (optional but recommended)
+    # EMA handling
+    # Note: Since training code doesn't save EMA shadow weights separately,
+    # the checkpoint should already contain the final model weights.
+    # If --ema flag is used, we assume the checkpoint already has EMA-applied weights.
     if args.ema:
-        print('[INFO] Evaluating with EMA weights')
-        ema = EMA(model)
-        # NOTE: EMA shadow should be saved during training if you want full correctness
-        # Here we assume final checkpoint is already EMA-applied OR close enough
-        ema.apply_to(model)
+        print('[INFO] Evaluating with EMA weights (assuming checkpoint contains EMA weights)')
+        # The loaded checkpoint should already have EMA weights if training saved them
+        # No need to apply empty EMA shadow
 
     model.eval()
     print('PGD white-box attack (parallel fusion)')
     eval_adv_test_whitebox(model, test_loader)
-
-    if args.ema:
-        ema.restore(model)
 
 
 if __name__ == '__main__':

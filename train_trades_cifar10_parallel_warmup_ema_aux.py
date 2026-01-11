@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 import torchvision
 import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchvision import transforms
 
 from models.parallel_wrn import WRNWithEmbedding, ParallelFusionWRN
@@ -209,6 +210,7 @@ def main():
 
     # -------- CE warmup (10 epochs, BN NOT frozen) --------
     print('==== CE warmup (10 epochs) ====')
+    # Keep constant LR during warmup
     for ep in range(1, 11):
         fusion.train()
         for x, y in train_loader_10:
@@ -222,12 +224,16 @@ def main():
             optimizer.step()
             ema.update(fusion)
 
-        print(f'[Warmup] Epoch {ep}/10')
+        print(f'[Warmup] Epoch {ep}/10, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
     # -------- Freeze BN AFTER warmup --------
     freeze_bn(fusion)
 
-    # -------- TRADES training --------
+    # -------- TRADES training with Cosine Annealing LR --------
+    # Cosine annealing: smoothly decay from lr to lr*0.01 over fusion training epochs
+    # This is better for frozen BN scenario compared to step decay
+    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs_fusion, eta_min=args.lr * 0.01)
+    
     print('==== TRADES training ====')
     for ep in range(1, args.epochs_fusion + 1):
         fusion.train()
@@ -260,8 +266,21 @@ def main():
                 correct += (pred == y).sum().item()
                 total += y.size(0)
 
+        # Update learning rate
+        scheduler.step()
+        current_lr = optimizer.param_groups[0]['lr']
+        
         acc = correct / total
-        print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] acc={acc*100:.2f}%')
+        print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] acc={acc*100:.2f}%, lr={current_lr:.6f}')
+
+        # For the last epoch, apply EMA weights before saving
+        if ep == args.epochs_fusion:
+            # Apply EMA weights to model
+            with torch.no_grad():
+                for n, p in fusion.named_parameters():
+                    if n in ema.shadow:
+                        p.data.copy_(ema.shadow[n])
+            print(f'[INFO] Applied EMA weights to final checkpoint')
 
         torch.save(fusion.state_dict(),
                    f'{args.model_dir}/fusion-epoch{ep}.pt')
