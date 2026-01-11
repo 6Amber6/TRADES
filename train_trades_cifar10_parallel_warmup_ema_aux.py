@@ -180,8 +180,8 @@ def main():
     )
 
     # ================= Stage 1 =================
-    m4 = WRNWithEmbedding(34, 10, 4).to(device)
-    m6 = WRNWithEmbedding(34, 10, 6).to(device)
+    m4 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=4).to(device)
+    m6 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=6).to(device)
 
     opt4 = optim.SGD(m4.parameters(), lr=args.lr,
                      momentum=args.momentum, weight_decay=args.weight_decay)
