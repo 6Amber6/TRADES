@@ -26,7 +26,7 @@ CIFAR10_STD  = (0.2023, 0.1994, 0.2010)
 
 
 # =========================================================
-# EMA 
+# EMA
 # =========================================================
 class EMA:
     def __init__(self, model, decay=0.999):
@@ -80,7 +80,7 @@ def freeze_bn(model):
 
 
 # =========================================================
-# Aux loss 
+# Aux loss
 # =========================================================
 def aux_ce_loss(logits4, logits6, y, device, weight=0.02):
     loss = 0.0
@@ -125,7 +125,7 @@ args = parser.parse_args()
 
 
 # =========================================================
-# Training utilities 
+# Training utilities
 # =========================================================
 def train_ce_epoch(model, loader, optimizer, device):
     model.train()
@@ -199,7 +199,6 @@ def main():
 
     # ================= Stage 2 =================
     fusion = ParallelFusionWRN(m4, m6).to(device)
-    freeze_bn(fusion)
 
     optimizer = optim.SGD(
         filter(lambda p: p.requires_grad, fusion.parameters()),
@@ -208,9 +207,9 @@ def main():
 
     ema = EMA(fusion, decay=0.999)
 
-    # -------- CE warmup (NEW) --------
-    print('==== CE warmup (5 epochs) ====')
-    for ep in range(1, 6):
+    # -------- CE warmup (10 epochs, BN NOT frozen) --------
+    print('==== CE warmup (10 epochs) ====')
+    for ep in range(1, 11):
         fusion.train()
         for x, y in train_loader_10:
             x, y = x.to(device), y.to(device)
@@ -224,9 +223,12 @@ def main():
             optimizer.step()
             ema.update(fusion)
 
-        print(f'[Warmup] Epoch {ep}/5')
+        print(f'[Warmup] Epoch {ep}/10')
 
-    # -------- TRADES (original + aux + EMA) --------
+    # -------- Freeze BN AFTER warmup --------
+    freeze_bn(fusion)
+
+    # -------- TRADES training --------
     print('==== TRADES training ====')
     for ep in range(1, args.epochs_fusion + 1):
         fusion.train()
