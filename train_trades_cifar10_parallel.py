@@ -55,7 +55,6 @@ class CIFARSubset(torch.utils.data.Dataset):
 def freeze_bn(model: torch.nn.Module):
     """
     Freeze all BatchNorm layers: stop updating running_mean/var and keep affine params fixed.
-    This matches common robust-training practice to avoid BN stats being poisoned by adversarial examples.
     """
     for m in model.modules():
         if isinstance(m, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d)):
@@ -112,7 +111,7 @@ def train_ce_epoch(model, loader, optimizer, device):
 
 def train_trades_epoch(model, loader, optimizer, device,
                        epsilon, num_steps, step_size, beta):
-    """Train one epoch with TRADES and return avg loss & clean acc (on natural x)"""
+    """Train one epoch with TRADES and return avg loss & clean acc"""
     model.train()
     total_loss = 0.0
     correct = 0
@@ -138,7 +137,6 @@ def train_trades_epoch(model, loader, optimizer, device,
 
         total_loss += loss.item() * x.size(0)
 
-        # clean accuracy on natural examples
         with torch.no_grad():
             logits = model(x)
             pred = logits.argmax(dim=1)
@@ -155,7 +153,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.model_dir, exist_ok=True)
 
-    # Data augmentation identical to TRADES + Normalize (added)
+    # Data augmentation identical to TRADES + Normalize
     transform = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
@@ -195,7 +193,7 @@ def main():
     )
 
     # =====================================================
-    # Stage 1: Train 4-class & 6-class submodels
+    # Stage 1: Train submodels
     # =====================================================
     m4 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=4).to(device)
     m6 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=6).to(device)
@@ -214,20 +212,16 @@ def main():
 
         print(
             f'[Submodels][Epoch {epoch}/{args.epochs_sub}] '
-            f'WRN-4: loss={loss4:.4f}, acc={acc4*100:.2f}% | '
-            f'WRN-6: loss={loss6:.4f}, acc={acc6*100:.2f}%'
+            f'WRN-4 acc={acc4*100:.2f}% | WRN-6 acc={acc6*100:.2f}%'
         )
 
     torch.save(m4.state_dict(), f'{args.model_dir}/wrn4_final.pt')
     torch.save(m6.state_dict(), f'{args.model_dir}/wrn6_final.pt')
 
     # =====================================================
-    # Stage 2: TRADES training for fusion model (Freeze BN)
+    # Stage 2: Fusion training
     # =====================================================
     fusion = ParallelFusionWRN(m4, m6).to(device)
-
-    # Freeze BN for Stage 2 only
-    freeze_bn(fusion)
 
     optimizer_fusion = optim.SGD(
         filter(lambda p: p.requires_grad, fusion.parameters()),
@@ -236,7 +230,26 @@ def main():
         weight_decay=args.weight_decay
     )
 
-    print('==== Stage 2: TRADES training for fusion model (Freeze BN) ====')
+    # -------- CE warmup (10 epochs, BN NOT frozen) --------
+    print('==== Stage 2: CE warmup (10 epochs) ====')
+    for ep in range(1, 11):
+        fusion.train()
+        for x, y in train_loader_10:
+            x, y = x.to(device), y.to(device)
+            optimizer_fusion.zero_grad()
+
+            logits = fusion(x)
+            loss = F.cross_entropy(logits, y)
+            loss.backward()
+            optimizer_fusion.step()
+
+        print(f'[Warmup][Epoch {ep}/10]')
+
+    # -------- Freeze BN AFTER warmup --------
+    freeze_bn(fusion)
+
+    # -------- TRADES training --------
+    print('==== Stage 2: TRADES training (Freeze BN) ====')
     for epoch in range(1, args.epochs_fusion + 1):
         loss, acc = train_trades_epoch(
             fusion,
