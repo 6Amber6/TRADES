@@ -14,6 +14,14 @@ def l2_norm(x):
     return squared_l2_norm(x).sqrt()
 
 
+def _normalize_bounds(mean, std, device):
+    mean_t = torch.tensor(mean, device=device).view(1, -1, 1, 1)
+    std_t = torch.tensor(std, device=device).view(1, -1, 1, 1)
+    low = (0.0 - mean_t) / std_t
+    high = (1.0 - mean_t) / std_t
+    return low, high, std_t
+
+
 def trades_loss(model,
                 x_natural,
                 y,
@@ -22,13 +30,24 @@ def trades_loss(model,
                 epsilon=0.031,
                 perturb_steps=10,
                 beta=1.0,
-                distance='l_inf'):
+                distance='l_inf',
+                data_mean=None,
+                data_std=None):
     # define KL-loss
     criterion_kl = nn.KLDivLoss(size_average=False)
     model.eval()
     batch_size = len(x_natural)
     # generate adversarial example
-    x_adv = x_natural.detach() + 0.001 * torch.randn(x_natural.shape).cuda().detach()
+    if data_mean is not None and data_std is not None:
+        low, high, std = _normalize_bounds(data_mean, data_std, x_natural.device)
+        step = step_size / std
+        eps = epsilon / std
+    else:
+        low, high = 0.0, 1.0
+        step = step_size
+        eps = epsilon
+
+    x_adv = x_natural.detach() + 0.001 * torch.randn(x_natural.shape, device=x_natural.device).detach()
     if distance == 'l_inf':
         for _ in range(perturb_steps):
             x_adv.requires_grad_()
@@ -36,11 +55,11 @@ def trades_loss(model,
                 loss_kl = criterion_kl(F.log_softmax(model(x_adv), dim=1),
                                        F.softmax(model(x_natural), dim=1))
             grad = torch.autograd.grad(loss_kl, [x_adv])[0]
-            x_adv = x_adv.detach() + step_size * torch.sign(grad.detach())
-            x_adv = torch.min(torch.max(x_adv, x_natural - epsilon), x_natural + epsilon)
-            x_adv = torch.clamp(x_adv, 0.0, 1.0)
+            x_adv = x_adv.detach() + step * torch.sign(grad.detach())
+            x_adv = torch.min(torch.max(x_adv, x_natural - eps), x_natural + eps)
+            x_adv = torch.max(torch.min(x_adv, high), low)
     elif distance == 'l_2':
-        delta = 0.001 * torch.randn(x_natural.shape).cuda().detach()
+        delta = 0.001 * torch.randn(x_natural.shape, device=x_natural.device).detach()
         delta = Variable(delta.data, requires_grad=True)
 
         # Setup optimizers
@@ -65,14 +84,23 @@ def trades_loss(model,
 
             # projection
             delta.data.add_(x_natural)
-            delta.data.clamp_(0, 1).sub_(x_natural)
+            if isinstance(low, torch.Tensor) or isinstance(high, torch.Tensor):
+                delta.data = torch.max(torch.min(delta.data, high), low).sub_(x_natural)
+            else:
+                delta.data.clamp_(low, high).sub_(x_natural)
             delta.data.renorm_(p=2, dim=0, maxnorm=epsilon)
         x_adv = Variable(x_natural + delta, requires_grad=False)
     else:
-        x_adv = torch.clamp(x_adv, 0.0, 1.0)
+        if isinstance(low, torch.Tensor) or isinstance(high, torch.Tensor):
+            x_adv = torch.max(torch.min(x_adv, high), low)
+        else:
+            x_adv = torch.clamp(x_adv, low, high)
     model.train()
 
-    x_adv = Variable(torch.clamp(x_adv, 0.0, 1.0), requires_grad=False)
+    if isinstance(low, torch.Tensor) or isinstance(high, torch.Tensor):
+        x_adv = Variable(torch.max(torch.min(x_adv, high), low), requires_grad=False)
+    else:
+        x_adv = Variable(torch.clamp(x_adv, low, high), requires_grad=False)
     # zero gradient
     optimizer.zero_grad()
     # calculate robust loss

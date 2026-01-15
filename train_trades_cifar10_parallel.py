@@ -130,7 +130,9 @@ def train_trades_epoch(model, loader, optimizer, device,
             step_size=step_size,
             epsilon=epsilon,
             perturb_steps=num_steps,
-            beta=beta
+            beta=beta,
+            data_mean=CIFAR10_MEAN,
+            data_std=CIFAR10_STD
         )
 
         loss.backward()

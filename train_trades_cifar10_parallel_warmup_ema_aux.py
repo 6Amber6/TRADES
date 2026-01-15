@@ -280,7 +280,9 @@ def main():
                 step_size=args.step_size,
                 epsilon=args.epsilon,
                 perturb_steps=args.num_steps,
-                beta=args.beta
+                beta=args.beta,
+                data_mean=CIFAR10_MEAN,
+                data_std=CIFAR10_STD
             )
 
             out4, out6, _ = fusion(x, return_aux=True)
