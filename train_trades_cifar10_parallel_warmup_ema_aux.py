@@ -37,12 +37,27 @@ class EMA:
             for n, p in model.named_parameters()
             if p.requires_grad
         }
+        self.backup = {}
 
     @torch.no_grad()
     def update(self, model):
         for n, p in model.named_parameters():
             if n in self.shadow:
                 self.shadow[n].mul_(self.decay).add_(p.data, alpha=1 - self.decay)
+
+    @torch.no_grad()
+    def apply_to(self, model):
+        self.backup = {}
+        for n, p in model.named_parameters():
+            if n in self.shadow:
+                self.backup[n] = p.data.clone()
+                p.data.copy_(self.shadow[n])
+
+    @torch.no_grad()
+    def restore(self, model):
+        for n, p in model.named_parameters():
+            if n in self.backup:
+                p.data.copy_(self.backup[n])
 
 
 # =========================================================
@@ -167,7 +182,7 @@ def main():
         transforms.ToTensor(),
         transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
         # Add RandomErasing for better regularization (like previous code)
-        transforms.RandomErasing(p=0.5, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0),
+        transforms.RandomErasing(p=0.3, scale=(0.02, 0.08), ratio=(0.3, 3.3), value='random'),
     ])
 
     base_train = torchvision.datasets.CIFAR10(
@@ -295,7 +310,10 @@ def main():
             ema.update(fusion)
 
             with torch.no_grad():
+                # Evaluate using EMA weights for more stable accuracy tracking
+                ema.apply_to(fusion)
                 pred = fusion(x, return_aux=True)[-1].argmax(1)
+                ema.restore(fusion)
                 correct += (pred == y).sum().item()
                 total += y.size(0)
 
