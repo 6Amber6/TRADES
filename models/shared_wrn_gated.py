@@ -89,7 +89,7 @@ class SharedWRNGated(nn.Module):
         out = F.adaptive_avg_pool2d(out, 1).view(out.size(0), -1)
         return fc(out)
 
-    def forward(self, x, return_aux=False, head=None):
+    def forward(self, x, return_aux=False, head=None, return_gate=False):
         shared = self.conv1(x)
         shared = self.block1(shared)
         shared = self.block2(shared)
@@ -107,12 +107,17 @@ class SharedWRNGated(nn.Module):
             return logits_animal
 
         # Dynamic fusion: place logits in CIFAR-10 order
-        gate_v = gate.expand_as(logits_vehicle)
-        gate_a = (1.0 - gate).expand_as(logits_animal)
+        gate_clamped = gate.clamp(1e-6, 1.0 - 1e-6)
+        gate_v = torch.log(gate_clamped).expand_as(logits_vehicle)
+        gate_a = torch.log(1.0 - gate_clamped).expand_as(logits_animal)
         out = logits_vehicle.new_zeros((logits_vehicle.size(0), 10))
-        out[:, self.vehicle_classes] = logits_vehicle * gate_v
-        out[:, self.animal_classes] = logits_animal * gate_a
+        out[:, self.vehicle_classes] = logits_vehicle + gate_v
+        out[:, self.animal_classes] = logits_animal + gate_a
 
+        if return_aux and return_gate:
+            return logits_vehicle, logits_animal, out, gate
         if return_aux:
             return logits_vehicle, logits_animal, out
+        if return_gate:
+            return out, gate
         return out

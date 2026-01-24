@@ -90,16 +90,13 @@ class CIFARSubset(torch.utils.data.Dataset):
 def freeze_bn(model):
     for m in model.modules():
         if isinstance(m, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d)):
+            # Freeze running stats only; keep affine params trainable
             m.eval()
-            for p in m.parameters():
-                p.requires_grad = False
 
 def unfreeze_bn(model):
     for m in model.modules():
         if isinstance(m, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d)):
             m.train()
-            for p in m.parameters():
-                p.requires_grad = True
 
 
 # =========================================================
@@ -127,6 +124,18 @@ def aux_ce_loss(logits4, logits6, y, device, weight=0.02):
             )
 
     return weight * loss
+
+
+def gate_supervision_loss(gate, y, device):
+    target = torch.isin(y, torch.tensor(VEHICLE_CLASSES, device=device)).float().view(-1, 1)
+    return F.binary_cross_entropy(gate, target)
+
+
+def gate_kl_loss(gate_adv, gate_clean, eps=1e-6):
+    p = gate_adv.clamp(eps, 1 - eps)
+    q = gate_clean.clamp(eps, 1 - eps)
+    kl = p * (p / q).log() + (1 - p) * ((1 - p) / (1 - q)).log()
+    return kl.mean()
 
 
 # =========================================================
@@ -181,8 +190,6 @@ def main():
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
-        # Add RandomErasing for better regularization (like previous code)
-        transforms.RandomErasing(p=0.3, scale=(0.02, 0.08), ratio=(0.3, 3.3), value='random'),
     ])
 
     base_train = torchvision.datasets.CIFAR10(
@@ -310,15 +317,19 @@ def main():
     
     print('==== TRADES training ====')
     bn_unfrozen = False
+    gate_sup_weight = 0.1
+    gate_stab_weight = 0.1
     for ep in range(1, args.epochs_fusion + 1):
         fusion.train()
+        if not bn_unfrozen:
+            freeze_bn(fusion)
         total, correct = 0, 0
 
         for x, y in train_loader_10:
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
 
-            loss = trades_loss(
+            loss, x_adv = trades_loss(
                 model=fusion,
                 x_natural=x,
                 y=y,
@@ -328,11 +339,16 @@ def main():
                 perturb_steps=args.num_steps,
                 beta=args.beta,
                 data_mean=CIFAR10_MEAN,
-                data_std=CIFAR10_STD
+                data_std=CIFAR10_STD,
+                return_x_adv=True
             )
 
-            out4, out6, _ = fusion(x, return_aux=True)
-            loss += aux_ce_loss(out4, out6, y, device)
+            out4_adv, out6_adv, _, gate_adv = fusion(x_adv, return_aux=True, return_gate=True)
+            loss += aux_ce_loss(out4_adv, out6_adv, y, device)
+
+            _, _, _, gate_clean = fusion(x, return_aux=True, return_gate=True)
+            loss += gate_sup_weight * gate_supervision_loss(gate_clean, y, device)
+            loss += gate_stab_weight * gate_kl_loss(gate_adv, gate_clean.detach())
 
             loss.backward()
             # Gradient clipping for stability

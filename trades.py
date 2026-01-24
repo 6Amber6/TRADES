@@ -32,9 +32,11 @@ def trades_loss(model,
                 beta=1.0,
                 distance='l_inf',
                 data_mean=None,
-                data_std=None):
+                data_std=None,
+                return_x_adv=False):
     # define KL-loss
     criterion_kl = nn.KLDivLoss(size_average=False)
+    was_training = model.training
     model.eval()
     batch_size = len(x_natural)
     # generate adversarial example
@@ -95,7 +97,8 @@ def trades_loss(model,
             x_adv = torch.max(torch.min(x_adv, high), low)
         else:
             x_adv = torch.clamp(x_adv, low, high)
-    model.train()
+    if was_training:
+        model.train()
 
     if isinstance(low, torch.Tensor) or isinstance(high, torch.Tensor):
         x_adv = Variable(torch.max(torch.min(x_adv, high), low), requires_grad=False)
@@ -109,4 +112,6 @@ def trades_loss(model,
     loss_robust = (1.0 / batch_size) * criterion_kl(F.log_softmax(model(x_adv), dim=1),
                                                     F.softmax(model(x_natural), dim=1))
     loss = loss_natural + beta * loss_robust
+    if return_x_adv:
+        return loss, x_adv
     return loss
