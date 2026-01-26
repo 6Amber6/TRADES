@@ -1,5 +1,6 @@
 from __future__ import print_function
 import os
+import math
 import argparse
 import torch
 import torch.nn.functional as F
@@ -194,11 +195,15 @@ def main():
                      momentum=args.momentum, weight_decay=args.weight_decay)
     opt6 = optim.SGD(m6.parameters(), lr=args.lr,
                      momentum=args.momentum, weight_decay=args.weight_decay)
+    sched4 = CosineAnnealingLR(opt4, T_max=args.epochs_sub)
+    sched6 = CosineAnnealingLR(opt6, T_max=args.epochs_sub)
 
     print('==== Stage 1 ====')
     for ep in range(1, args.epochs_sub + 1):
         l4, a4 = train_ce_epoch(m4, train_loader_4, opt4, device)
         l6, a6 = train_ce_epoch(m6, train_loader_6, opt6, device)
+        sched4.step()
+        sched6.step()
         print(f'[Sub][{ep}] 4c acc={a4*100:.2f}% | 6c acc={a6*100:.2f}%')
 
     torch.save(m4.state_dict(), f'{args.model_dir}/wrn4_final.pt')
@@ -230,7 +235,7 @@ def main():
 
     ema = EMA(fusion, decay=0.999)
 
-    # -------- CE warmup (10 epochs, BN NOT frozen) --------
+    # -------- CE warmup (10 epochs) --------
     print('==== CE warmup (10 epochs) ====')
     # Keep constant LR during warmup
     for ep in range(1, 11):
@@ -250,14 +255,26 @@ def main():
 
         print(f'[Warmup] Epoch {ep}/10, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
-    # -------- TRADES training with MultiStepLR (like previous code) --------
-    # MultiStepLR is more stable than CosineAnnealingLR for this scenario
-    # Decay at 50% and 75% of training
-    milestones = [args.epochs_fusion // 2, int(args.epochs_fusion * 0.75)]
-    scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
+    # -------- TRADES training with warmup + cosine decay --------
+    base_lrs = [pg['lr'] for pg in optimizer.param_groups]
+    warmup_epochs = 5
+    cosine_epochs = max(1, args.epochs_fusion - warmup_epochs)
+    min_lr_scale = 0.01
     
     print('==== TRADES training ====')
     for ep in range(1, args.epochs_fusion + 1):
+        if ep <= warmup_epochs:
+            lr_scale = ep / warmup_epochs
+        else:
+            t = ep - warmup_epochs
+            if cosine_epochs == 1:
+                lr_scale = 1.0
+            else:
+                cosine = 0.5 * (1.0 + math.cos(math.pi * t / cosine_epochs))
+                lr_scale = min_lr_scale + (1.0 - min_lr_scale) * cosine
+        for pg, base_lr in zip(optimizer.param_groups, base_lrs):
+            pg['lr'] = base_lr * lr_scale
+
         fusion.train()
         total, correct = 0, 0
 
@@ -288,19 +305,28 @@ def main():
             ema.update(fusion)
 
             with torch.no_grad():
-                # Evaluate using EMA weights for more stable accuracy tracking
-                ema.apply_to(fusion)
                 pred = fusion(x, return_aux=True)[-1].argmax(1)
-                ema.restore(fusion)
                 correct += (pred == y).sum().item()
                 total += y.size(0)
 
-        # Update learning rate
-        scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']
         
-        acc = correct / total
-        print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] acc={acc*100:.2f}%, lr={current_lr:.6f}')
+        train_acc = correct / total
+        # Validation with EMA weights at epoch end
+        ema.apply_to(fusion)
+        fusion.eval()
+        ema_correct, ema_total = 0, 0
+        with torch.no_grad():
+            for x, y in train_loader_10:
+                x, y = x.to(device), y.to(device)
+                pred = fusion(x, return_aux=True)[-1].argmax(1)
+                ema_correct += (pred == y).sum().item()
+                ema_total += y.size(0)
+        ema.restore(fusion)
+        fusion.train()
+
+        ema_acc = ema_correct / ema_total if ema_total else 0.0
+        print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] acc={train_acc*100:.2f}%, ema_acc={ema_acc*100:.2f}%, lr={current_lr:.6f}')
 
         # For the last epoch, apply EMA weights before saving
         if ep == args.epochs_fusion:
