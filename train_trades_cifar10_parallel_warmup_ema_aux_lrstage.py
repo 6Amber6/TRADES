@@ -245,11 +245,11 @@ def main():
     for p in fusion.m6.parameters():
         p.requires_grad = True
     
-    # Use different learning rates: fusion layer gets full lr, backbones get lr*0.2
+    # Use different learning rates: fusion layer gets full lr, backbones init at full lr
     params = [
         {'params': fusion.fc.parameters(), 'lr': args.lr},
-        {'params': fusion.m4.parameters(), 'lr': args.lr * 0.2},
-        {'params': fusion.m6.parameters(), 'lr': args.lr * 0.2},
+        {'params': fusion.m4.parameters(), 'lr': args.lr},
+        {'params': fusion.m6.parameters(), 'lr': args.lr},
     ]
     
     optimizer = optim.SGD(
@@ -296,7 +296,7 @@ def main():
         fusion.train()
         total, correct = 0, 0
 
-        ratio = backbone_lr_ratio(ep, args.epochs_fusion, r1=0.2, r2=0.5, r3=0.5)
+        ratio = backbone_lr_ratio(ep, args.epochs_fusion, r1=0.15, r2=0.5, r3=0.35)
         fusion_lr = optimizer.param_groups[0]['lr']
         optimizer.param_groups[1]['lr'] = fusion_lr * ratio
         optimizer.param_groups[2]['lr'] = fusion_lr * ratio
