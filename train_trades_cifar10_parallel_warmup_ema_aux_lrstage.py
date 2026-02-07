@@ -189,34 +189,44 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.model_dir, exist_ok=True)
 
-    transform = transforms.Compose([
+    # Stage 1: weaker augmentation for 4/6-class submodels
+    transform_sub = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
-        # Add RandAugment
+        transforms.ToTensor(),
+        transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
+        transforms.RandomErasing(p=0.05, scale=(0.02, 0.08), ratio=(0.3, 3.3), value='random'),
+    ])
+
+    # Stage 2: stronger augmentation for fusion/TRADES
+    transform_fusion = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
         transforms.RandAugment(num_ops=2, magnitude=7),
         transforms.ToTensor(),
         transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
-        # Add RandomErasing for better regularization (like previous code)
-        # p= 0.3 -> p = 0.2
         transforms.RandomErasing(p=0.2, scale=(0.02, 0.08), ratio=(0.3, 3.3), value='random'),
     ])
 
-    base_train = torchvision.datasets.CIFAR10(
-        root='../data', train=True, download=True, transform=transform
+    base_train_sub = torchvision.datasets.CIFAR10(
+        root='../data', train=True, download=True, transform=transform_sub
+    )
+    base_train_fusion = torchvision.datasets.CIFAR10(
+        root='../data', train=True, download=True, transform=transform_fusion
     )
 
     train_loader_4 = torch.utils.data.DataLoader(
-        CIFARSubset(base_train, VEHICLE_CLASSES),
+        CIFARSubset(base_train_sub, VEHICLE_CLASSES),
         batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True
     )
 
     train_loader_6 = torch.utils.data.DataLoader(
-        CIFARSubset(base_train, ANIMAL_CLASSES),
+        CIFARSubset(base_train_sub, ANIMAL_CLASSES),
         batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True
     )
 
     train_loader_10 = torch.utils.data.DataLoader(
-        base_train,
+        base_train_fusion,
         batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True
     )
 
