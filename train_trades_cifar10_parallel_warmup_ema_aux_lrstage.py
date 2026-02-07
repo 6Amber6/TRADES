@@ -192,10 +192,13 @@ def main():
     transform = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
+        # Add RandAugment
+        transforms.RandAugment(num_ops=2, magnitude=7),
         transforms.ToTensor(),
         transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
         # Add RandomErasing for better regularization (like previous code)
-        transforms.RandomErasing(p=0.3, scale=(0.02, 0.08), ratio=(0.3, 3.3), value='random'),
+        # p= 0.3 -> p = 0.2
+        transforms.RandomErasing(p=0.2, scale=(0.02, 0.08), ratio=(0.3, 3.3), value='random'),
     ])
 
     base_train = torchvision.datasets.CIFAR10(
