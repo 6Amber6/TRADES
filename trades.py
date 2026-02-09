@@ -59,7 +59,10 @@ def trades_loss(model,
             grad = torch.autograd.grad(loss_kl, [x_adv])[0]
             x_adv = x_adv.detach() + step * torch.sign(grad.detach())
             x_adv = torch.min(torch.max(x_adv, x_natural - eps), x_natural + eps)
-            x_adv = torch.max(torch.min(x_adv, high), low)
+            if isinstance(low, torch.Tensor) or isinstance(high, torch.Tensor):
+                x_adv = torch.max(torch.min(x_adv, high), low)
+            else:
+                x_adv = torch.clamp(x_adv, low, high)
     elif distance == 'l_2':
         delta = 0.001 * torch.randn(x_natural.shape, device=x_natural.device).detach()
         delta = Variable(delta.data, requires_grad=True)
