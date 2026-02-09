@@ -60,7 +60,9 @@ def trades_loss(model,
             x_adv = x_adv.detach() + step * torch.sign(grad.detach())
             x_adv = torch.min(torch.max(x_adv, x_natural - eps), x_natural + eps)
             if isinstance(low, torch.Tensor) or isinstance(high, torch.Tensor):
-                x_adv = torch.max(torch.min(x_adv, high), low)
+                low_t = low if isinstance(low, torch.Tensor) else torch.tensor(low, device=x_adv.device)
+                high_t = high if isinstance(high, torch.Tensor) else torch.tensor(high, device=x_adv.device)
+                x_adv = torch.max(torch.min(x_adv, high_t), low_t)
             else:
                 x_adv = torch.clamp(x_adv, low, high)
     elif distance == 'l_2':
@@ -104,9 +106,11 @@ def trades_loss(model,
         model.train()
 
     if isinstance(low, torch.Tensor) or isinstance(high, torch.Tensor):
-        x_adv = Variable(torch.max(torch.min(x_adv, high), low), requires_grad=False)
+        low_t = low if isinstance(low, torch.Tensor) else torch.tensor(low, device=x_adv.device)
+        high_t = high if isinstance(high, torch.Tensor) else torch.tensor(high, device=x_adv.device)
+        x_adv = torch.max(torch.min(x_adv, high_t), low_t).detach()
     else:
-        x_adv = Variable(torch.clamp(x_adv, low, high), requires_grad=False)
+        x_adv = torch.clamp(x_adv, float(low), float(high)).detach()
     # zero gradient
     optimizer.zero_grad()
     # calculate robust loss
