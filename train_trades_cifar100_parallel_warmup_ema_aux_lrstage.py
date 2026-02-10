@@ -6,19 +6,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 from torchvision import transforms
 
 from models.parallel_wrn import WRNWithEmbedding
 from trades import trades_loss
-
-
-# =========================================================
-# CIFAR-100 (coarse) class split: 20 coarse labels -> 2 groups of 10
-# =========================================================
-COARSE_GROUP_A = [0, 1, 7, 8, 11, 12, 13, 14, 15, 16]
-COARSE_GROUP_B = [2, 3, 4, 5, 6, 9, 10, 17, 18, 19]
-COARSE_GROUP_A_T = torch.tensor(COARSE_GROUP_A, dtype=torch.long)
-COARSE_GROUP_B_T = torch.tensor(COARSE_GROUP_B, dtype=torch.long)
 
 
 # =========================================================
@@ -29,7 +21,7 @@ CIFAR100_STD = (0.2675, 0.2565, 0.2761)
 
 
 # =========================================================
-# CIFAR-100 fine -> coarse mapping (fallback for older torchvision)
+# CIFAR-100 fine -> coarse mapping
 # =========================================================
 CIFAR100_FINE_TO_COARSE = [
     4, 1, 14, 8, 0, 6, 7, 7, 18, 3,
@@ -43,6 +35,26 @@ CIFAR100_FINE_TO_COARSE = [
     16, 19, 2, 4, 6, 19, 5, 5, 8, 19,
     18, 1, 2, 15, 6, 0, 17, 8, 14, 13,
 ]
+
+
+# =========================================================
+# Meta-groups by coarse class IDs (customize here)
+# =========================================================
+# 0 aquatic mammals, 1 fish, 2 flowers, 3 food containers, 4 fruit/veg,
+# 5 household electrical, 6 household furniture, 7 insects, 8 large carnivores,
+# 9 large man-made outdoor, 10 large natural outdoor, 11 large omnivores/herbivores,
+# 12 medium mammals, 13 non-insect invertebrates, 14 people, 15 reptiles,
+# 16 small mammals, 17 trees, 18 vehicles 1, 19 vehicles 2
+COARSE_GROUPS = {
+    # Textured Organic: insects, reptiles, small mammals, plus carnivores/invertebrates
+    "textured_organic": [7, 15, 16, 8, 13],
+    # Smooth Organic: fish, aquatic mammals, large herbivores, medium mammals, people
+    "smooth_organic": [1, 0, 11, 12, 14],
+    # Rigid Man-made: furniture, electrical, containers, vehicles1, large man-made outdoor
+    "rigid_manmade": [6, 5, 3, 18, 9],
+    # Large Structures/Nature: natural scenes, trees, vehicles2, flowers, fruit/veg
+    "large_structures": [10, 17, 19, 2, 4],
+}
 
 
 # =========================================================
@@ -80,16 +92,15 @@ class EMA:
 
 
 # =========================================================
-# Dataset wrapper
+# Dataset wrapper for fine labels
 # =========================================================
-class CIFARSubset(torch.utils.data.Dataset):
-    def __init__(self, base_dataset, keep_classes):
+class CIFARFineSubset(torch.utils.data.Dataset):
+    def __init__(self, base_dataset, keep_fine_classes):
         self.base = base_dataset
-        self.map = {c: i for i, c in enumerate(keep_classes)}
-
+        self.map = {c: i for i, c in enumerate(keep_fine_classes)}
         targets = torch.tensor(self.base.targets)
         self.idx = (
-            (targets.unsqueeze(1) == torch.tensor(keep_classes))
+            (targets.unsqueeze(1) == torch.tensor(keep_fine_classes))
             .any(dim=1)
             .nonzero(as_tuple=False)
             .view(-1)
@@ -122,55 +133,46 @@ def unfreeze_bn(model):
 
 
 # =========================================================
-# Fusion model for 20 coarse classes
+# Fusion model for 100 fine classes
 # =========================================================
-class ParallelFusionWRNCoarse(nn.Module):
-    def __init__(self, model_a, model_b, num_classes=20):
+class ParallelFusionWRN100(nn.Module):
+    def __init__(self, submodels, num_classes=100):
         super().__init__()
-        self.m4 = model_a
-        self.m6 = model_b
-
-        for p in self.m4.parameters():
-            p.requires_grad = False
-        for p in self.m6.parameters():
-            p.requires_grad = False
-
-        self.fc = nn.Linear(640 * 2, num_classes)
+        self.submodels = nn.ModuleList(submodels)
+        for m in self.submodels:
+            for p in m.parameters():
+                p.requires_grad = False
+        emb_dim = sum(m.nChannels for m in self.submodels)
+        self.fc = nn.Linear(emb_dim, num_classes)
 
     def forward(self, x, return_aux=False):
-        e4, out4 = self.m4(x, return_embedding=True)
-        e6, out6 = self.m6(x, return_embedding=True)
-        emb = torch.cat([e4, e6], dim=1)
-        out = self.fc(emb)
+        embs = []
+        aux_outputs = []
+        for m in self.submodels:
+            emb, out = m(x, return_embedding=True)
+            embs.append(emb)
+            aux_outputs.append(out)
+        combined = torch.cat(embs, dim=1)
+        final_out = self.fc(combined)
         if return_aux:
-            return out4, out6, out
-        return out
+            return aux_outputs, final_out
+        return final_out
 
 
 # =========================================================
-# Aux loss for two coarse groups
+# Aux loss for 4 meta-groups
 # =========================================================
-def aux_ce_loss(logits_a, logits_b, y, group_a_t, group_b_t, map_a, map_b, weight=0.02):
+def aux_ce_loss(group_logits, y, group_defs, fine_to_coarse_t, weight=0.1):
     loss = 0.0
-
-    if logits_a is not None:
-        mask_a = torch.isin(y, group_a_t)
-        if mask_a.any():
-            y_a = map_a[y[mask_a]]
-            loss += F.cross_entropy(
-                logits_a[mask_a],
-                y_a
-            )
-
-    if logits_b is not None:
-        mask_b = torch.isin(y, group_b_t)
-        if mask_b.any():
-            y_b = map_b[y[mask_b]]
-            loss += F.cross_entropy(
-                logits_b[mask_b],
-                y_b
-            )
-
+    for i, g in enumerate(group_defs):
+        logits = group_logits[i]
+        if logits is None:
+            continue
+        coarse_y = fine_to_coarse_t[y]
+        mask = torch.isin(coarse_y, g["coarse_t"])
+        if mask.any():
+            y_group = g["map_t"][y[mask]]
+            loss += F.cross_entropy(logits[mask], y_group)
     return weight * loss
 
 
@@ -190,8 +192,8 @@ def backbone_lr_ratio(epoch, total_epochs, r1=0.15, r2=0.5, r3=0.35):
 # =========================================================
 # Arguments
 # =========================================================
-parser = argparse.ArgumentParser(description='TRADES Parallel WRN CIFAR-100 (coarse) Training')
-parser.add_argument('--epochs-sub', type=int, default=100)
+parser = argparse.ArgumentParser(description='TRADES Parallel WRN CIFAR-100 (4-group) Training')
+parser.add_argument('--epochs-sub', type=int, default=120)
 parser.add_argument('--epochs-fusion', type=int, default=100)
 parser.add_argument('--batch-size', type=int, default=128)
 parser.add_argument('--lr', type=float, default=0.1)
@@ -201,6 +203,10 @@ parser.add_argument('--epsilon', type=float, default=0.031)
 parser.add_argument('--num-steps', type=int, default=10)
 parser.add_argument('--step-size', type=float, default=0.007)
 parser.add_argument('--beta', type=float, default=6.0)
+parser.add_argument('--sub-depth', type=int, default=28, choices=[28, 34])
+parser.add_argument('--sub-widen', type=int, default=10, choices=[8, 10])
+parser.add_argument('--aux-weight', type=float, default=0.1)
+parser.add_argument('--scheduler', type=str, default='step', choices=['step', 'cosine', 'none'])
 parser.add_argument('--model-dir', default='./model-cifar100-parallel')
 args = parser.parse_args()
 
@@ -227,17 +233,8 @@ def train_ce_epoch(model, loader, optimizer, device):
     return total_loss / total, correct / total
 
 
-def build_cifar100_coarse(root, train, transform):
-    try:
-        return torchvision.datasets.CIFAR100(
-            root=root, train=train, download=True, transform=transform, target_type='coarse'
-        )
-    except TypeError:
-        dataset = torchvision.datasets.CIFAR100(
-            root=root, train=train, download=True, transform=transform
-        )
-        dataset.targets = [CIFAR100_FINE_TO_COARSE[t] for t in dataset.targets]
-        return dataset
+def build_fine_classes_for_group(group_coarse):
+    return [i for i, c in enumerate(CIFAR100_FINE_TO_COARSE) if c in group_coarse]
 
 
 # =========================================================
@@ -247,7 +244,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.model_dir, exist_ok=True)
 
-    # Stage 1: weaker augmentation for 10-class coarse submodels
+    # Stage 1: weaker augmentation for submodels
     transform_sub = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
@@ -266,61 +263,56 @@ def main():
         transforms.RandomErasing(p=0.2, scale=(0.02, 0.08), ratio=(0.3, 3.3), value='random'),
     ])
 
-    base_train_sub = build_cifar100_coarse('../data', train=True, transform=transform_sub)
-    base_train_fusion = build_cifar100_coarse('../data', train=True, transform=transform_fusion)
-    group_a_t = COARSE_GROUP_A_T.to(device)
-    group_b_t = COARSE_GROUP_B_T.to(device)
-    map_a = torch.full((20,), -1, device=device, dtype=torch.long)
-    map_b = torch.full((20,), -1, device=device, dtype=torch.long)
-    map_a[group_a_t] = torch.arange(10, device=device)
-    map_b[group_b_t] = torch.arange(10, device=device)
-
-    train_loader_a = torch.utils.data.DataLoader(
-        CIFARSubset(base_train_sub, COARSE_GROUP_A),
-        batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True
+    base_train_sub = torchvision.datasets.CIFAR100(
+        root='../data', train=True, download=True, transform=transform_sub
+    )
+    base_train_fusion = torchvision.datasets.CIFAR100(
+        root='../data', train=True, download=True, transform=transform_fusion
     )
 
-    train_loader_b = torch.utils.data.DataLoader(
-        CIFARSubset(base_train_sub, COARSE_GROUP_B),
-        batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True
-    )
+    group_names = list(COARSE_GROUPS.keys())
+    group_coarse = [COARSE_GROUPS[name] for name in group_names]
+    group_fine = [build_fine_classes_for_group(g) for g in group_coarse]
 
-    train_loader_20 = torch.utils.data.DataLoader(
+    group_loaders = []
+    for fine_classes in group_fine:
+        loader = torch.utils.data.DataLoader(
+            CIFARFineSubset(base_train_sub, fine_classes),
+            batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True
+        )
+        group_loaders.append(loader)
+
+    train_loader_100 = torch.utils.data.DataLoader(
         base_train_fusion,
         batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True
     )
 
     # ================= Stage 1 =================
-    m_a = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=10).to(device)
-    m_b = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=10).to(device)
-
-    opt_a = optim.SGD(m_a.parameters(), lr=args.lr,
-                      momentum=args.momentum, weight_decay=args.weight_decay)
-    opt_b = optim.SGD(m_b.parameters(), lr=args.lr,
-                      momentum=args.momentum, weight_decay=args.weight_decay)
-
-    print('==== Stage 1 (CIFAR-100 coarse) ====')
-    for ep in range(1, args.epochs_sub + 1):
-        l_a, a_a = train_ce_epoch(m_a, train_loader_a, opt_a, device)
-        l_b, a_b = train_ce_epoch(m_b, train_loader_b, opt_b, device)
-        print(f'[Sub][{ep}] A(10c) acc={a_a*100:.2f}% | B(10c) acc={a_b*100:.2f}%')
-
-    torch.save(m_a.state_dict(), f'{args.model_dir}/wrnA_final.pt')
-    torch.save(m_b.state_dict(), f'{args.model_dir}/wrnB_final.pt')
+    submodels = []
+    print('==== Stage 1 (CIFAR-100 fine, 4 groups) ====')
+    for i, loader in enumerate(group_loaders):
+        m = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=len(group_fine[i])).to(device)
+        opt = optim.SGD(m.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+        for ep in range(1, args.epochs_sub + 1):
+            _, a = train_ce_epoch(m, loader, opt, device)
+            print(f'[Sub][{ep}] {group_names[i]} acc={a*100:.2f}%')
+        torch.save(m.state_dict(), f'{args.model_dir}/wrn_{group_names[i]}_final.pt')
+        m.to('cpu')
+        submodels.append(m)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # ================= Stage 2 =================
-    fusion = ParallelFusionWRNCoarse(m_a, m_b, num_classes=20).to(device)
+    for m in submodels:
+        m.to(device)
+        for p in m.parameters():
+            p.requires_grad = True
 
-    for p in fusion.m4.parameters():
-        p.requires_grad = True
-    for p in fusion.m6.parameters():
-        p.requires_grad = True
+    fusion = ParallelFusionWRN100(submodels, num_classes=100).to(device)
 
-    params = [
-        {'params': fusion.fc.parameters(), 'lr': args.lr},
-        {'params': fusion.m4.parameters(), 'lr': args.lr},
-        {'params': fusion.m6.parameters(), 'lr': args.lr},
-    ]
+    params = [{'params': fusion.fc.parameters(), 'lr': args.lr}]
+    for m in fusion.submodels:
+        params.append({'params': m.parameters(), 'lr': args.lr})
 
     optimizer = optim.SGD(
         params,
@@ -331,11 +323,20 @@ def main():
 
     ema = EMA(fusion, decay=0.999)
 
+    # Precompute maps for aux loss
+    fine_to_coarse_t = torch.tensor(CIFAR100_FINE_TO_COARSE, device=device, dtype=torch.long)
+    group_defs = []
+    for coarse_ids, fine_ids in zip(group_coarse, group_fine):
+        coarse_t = torch.tensor(coarse_ids, device=device, dtype=torch.long)
+        map_t = torch.full((100,), -1, device=device, dtype=torch.long)
+        map_t[torch.tensor(fine_ids, device=device)] = torch.arange(len(fine_ids), device=device)
+        group_defs.append({"coarse_t": coarse_t, "map_t": map_t})
+
     # -------- CE warmup (10 epochs, BN NOT frozen) --------
     print('==== CE warmup (10 epochs) ====')
     for ep in range(1, 11):
         fusion.train()
-        for x, y in train_loader_20:
+        for x, y in train_loader_100:
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
             out = fusion(x)
@@ -349,21 +350,27 @@ def main():
     # -------- Freeze BN AFTER warmup --------
     freeze_bn(fusion)
 
-    # -------- TRADES training (base LR fixed) --------
+    # -------- TRADES training (base LR scheduled) --------
     print('==== TRADES training ====')
     bn_unfrozen = False
+    if args.scheduler == 'step':
+        milestones = [int(args.epochs_fusion * 0.5), int(args.epochs_fusion * 0.75)]
+        scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
+    elif args.scheduler == 'cosine':
+        scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs_fusion)
+    else:
+        scheduler = None
     for ep in range(1, args.epochs_fusion + 1):
         fusion.train()
         total, correct = 0, 0
         total_loss = 0.0
 
         ratio = backbone_lr_ratio(ep, args.epochs_fusion, r1=0.15, r2=0.5, r3=0.35)
-        optimizer.param_groups[0]['lr'] = args.lr
-        fusion_lr = args.lr
-        optimizer.param_groups[1]['lr'] = fusion_lr * ratio
-        optimizer.param_groups[2]['lr'] = fusion_lr * ratio
+        fusion_lr = optimizer.param_groups[0]['lr']
+        for g in range(1, len(optimizer.param_groups)):
+            optimizer.param_groups[g]['lr'] = fusion_lr * ratio
 
-        for x, y in train_loader_20:
+        for x, y in train_loader_100:
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
 
@@ -380,8 +387,8 @@ def main():
                 data_std=CIFAR100_STD
             )
 
-            out_a, out_b, _ = fusion(x, return_aux=True)
-            loss += aux_ce_loss(out_a, out_b, y, group_a_t, group_b_t, map_a, map_b)
+            aux_logits, _ = fusion(x, return_aux=True)
+            loss += aux_ce_loss(aux_logits, y, group_defs, fine_to_coarse_t, weight=args.aux_weight)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(fusion.parameters(), 5.0)
@@ -391,7 +398,7 @@ def main():
             total_loss += loss.item() * x.size(0)
             with torch.no_grad():
                 ema.apply_to(fusion)
-                pred = fusion(x, return_aux=True)[-1].argmax(1)
+                pred = fusion(x).argmax(1)
                 ema.restore(fusion)
                 correct += (pred == y).sum().item()
                 total += y.size(0)
@@ -400,6 +407,9 @@ def main():
             unfreeze_bn(fusion)
             bn_unfrozen = True
             print(f'[INFO] Unfroze BN at epoch {ep}')
+
+        if scheduler is not None:
+            scheduler.step()
 
         acc = correct / total
         avg_loss = total_loss / total
