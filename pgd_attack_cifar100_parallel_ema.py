@@ -87,7 +87,7 @@ parser.set_defaults(random=True)
 
 parser.add_argument('--model-path', required=True)
 parser.add_argument('--sub-depth', type=int, default=28, choices=[28, 34])
-parser.add_argument('--sub-widen', type=int, default=4, choices=[4, 8, 10])
+parser.add_argument('--sub-widen', type=int, default=8, choices=[4, 8, 10])
 
 parser.add_argument('--ema', action='store_true',
                     help='evaluate using EMA weights (checkpoint should already contain EMA)')
