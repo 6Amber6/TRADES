@@ -43,6 +43,7 @@ COARSE_GROUPS = {
     "rigid_manmade": [6, 5, 3, 18, 9],
     "large_structures": [10, 17, 19, 2, 4],
 }
+GROUP_ORDER = ["textured_organic", "smooth_organic", "rigid_manmade", "large_structures"]
 
 
 # =========================================================
@@ -86,7 +87,7 @@ parser.set_defaults(random=True)
 
 parser.add_argument('--model-path', required=True)
 parser.add_argument('--sub-depth', type=int, default=28, choices=[28, 34])
-parser.add_argument('--sub-widen', type=int, default=10, choices=[8, 10])
+parser.add_argument('--sub-widen', type=int, default=4, choices=[4, 8, 10])
 
 parser.add_argument('--ema', action='store_true',
                     help='evaluate using EMA weights (checkpoint should already contain EMA)')
@@ -203,8 +204,17 @@ def eval_adv_test_whitebox(model, loader):
 # Main
 # =========================================================
 def main():
-    group_names = list(COARSE_GROUPS.keys())
-    group_coarse = [COARSE_GROUPS[name] for name in group_names]
+    checkpoint = torch.load(args.model_path, map_location=device)
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        model_state = checkpoint["state_dict"]
+        group_names = checkpoint.get("group_order", GROUP_ORDER)
+        coarse_groups = checkpoint.get("coarse_groups", COARSE_GROUPS)
+    else:
+        model_state = checkpoint
+        group_names = GROUP_ORDER
+        coarse_groups = COARSE_GROUPS
+
+    group_coarse = [coarse_groups[name] for name in group_names]
     group_fine = [build_fine_classes_for_group(g) for g in group_coarse]
 
     submodels = []
@@ -213,7 +223,7 @@ def main():
         submodels.append(m)
 
     model = ParallelFusionWRN100(submodels, num_classes=100).to(device)
-    model.load_state_dict(torch.load(args.model_path, map_location=device))
+    model.load_state_dict(model_state)
 
     if args.ema:
         print('[INFO] Evaluating with EMA weights (assuming checkpoint contains EMA weights)')

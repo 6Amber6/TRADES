@@ -55,6 +55,7 @@ COARSE_GROUPS = {
     # Large Structures/Nature: natural scenes, trees, vehicles2, flowers, fruit/veg
     "large_structures": [10, 17, 19, 2, 4],
 }
+GROUP_ORDER = ["textured_organic", "smooth_organic", "rigid_manmade", "large_structures"]
 
 
 # =========================================================
@@ -124,24 +125,17 @@ def freeze_bn(model):
             for p in m.parameters():
                 p.requires_grad = False
 
-def unfreeze_bn(model):
-    for m in model.modules():
-        if isinstance(m, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d)):
-            m.train()
-            for p in m.parameters():
-                p.requires_grad = True
-
-
 # =========================================================
 # Fusion model for 100 fine classes
 # =========================================================
 class ParallelFusionWRN100(nn.Module):
-    def __init__(self, submodels, num_classes=100):
+    def __init__(self, submodels, num_classes=100, freeze_backbone=False):
         super().__init__()
         self.submodels = nn.ModuleList(submodels)
-        for m in self.submodels:
-            for p in m.parameters():
-                p.requires_grad = False
+        if freeze_backbone:
+            for m in self.submodels:
+                for p in m.parameters():
+                    p.requires_grad = False
         emb_dim = sum(m.nChannels for m in self.submodels)
         self.fc = nn.Linear(emb_dim, num_classes)
 
@@ -204,7 +198,7 @@ parser.add_argument('--num-steps', type=int, default=10)
 parser.add_argument('--step-size', type=float, default=0.007)
 parser.add_argument('--beta', type=float, default=6.0)
 parser.add_argument('--sub-depth', type=int, default=28, choices=[28, 34])
-parser.add_argument('--sub-widen', type=int, default=10, choices=[8, 10])
+parser.add_argument('--sub-widen', type=int, default=4, choices=[4, 8, 10])
 parser.add_argument('--aux-weight', type=float, default=0.1)
 parser.add_argument('--scheduler', type=str, default='step', choices=['step', 'cosine', 'none'])
 parser.add_argument('--model-dir', default='./model-cifar100-parallel')
@@ -241,6 +235,15 @@ def build_fine_classes_for_group(group_coarse):
 # Main
 # =========================================================
 def main():
+    import random
+    import numpy as np
+    torch.manual_seed(0)
+    torch.cuda.manual_seed_all(0)
+    random.seed(0)
+    np.random.seed(0)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.model_dir, exist_ok=True)
 
@@ -257,10 +260,10 @@ def main():
     transform_fusion = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
-        transforms.RandAugment(num_ops=2, magnitude=7),
+        transforms.RandAugment(num_ops=2, magnitude=5),
         transforms.ToTensor(),
         transforms.Normalize(CIFAR100_MEAN, CIFAR100_STD),
-        transforms.RandomErasing(p=0.2, scale=(0.02, 0.08), ratio=(0.3, 3.3), value='random'),
+        transforms.RandomErasing(p=0.1, scale=(0.02, 0.08), ratio=(0.3, 3.3), value='random'),
     ])
 
     base_train_sub = torchvision.datasets.CIFAR100(
@@ -270,7 +273,7 @@ def main():
         root='../data', train=True, download=True, transform=transform_fusion
     )
 
-    group_names = list(COARSE_GROUPS.keys())
+    group_names = GROUP_ORDER
     group_coarse = [COARSE_GROUPS[name] for name in group_names]
     group_fine = [build_fine_classes_for_group(g) for g in group_coarse]
 
@@ -308,7 +311,7 @@ def main():
         for p in m.parameters():
             p.requires_grad = True
 
-    fusion = ParallelFusionWRN100(submodels, num_classes=100).to(device)
+    fusion = ParallelFusionWRN100(submodels, num_classes=100, freeze_backbone=False).to(device)
 
     params = [{'params': fusion.fc.parameters(), 'lr': args.lr}]
     for m in fusion.submodels:
@@ -320,6 +323,13 @@ def main():
         weight_decay=args.weight_decay,
         nesterov=True
     )
+
+    print("Trainable params:", sum(p.numel() for p in fusion.parameters() if p.requires_grad))
+    print("FC trainable:", sum(p.numel() for p in fusion.fc.parameters() if p.requires_grad))
+    print("Backbone trainable:", sum(p.numel() for m in fusion.submodels for p in m.parameters() if p.requires_grad))
+    for i, pg in enumerate(optimizer.param_groups):
+        n = sum(p.numel() for p in pg["params"])
+        print(f"opt group {i}: lr={pg['lr']}, params={n}")
 
     ema = EMA(fusion, decay=0.999)
 
@@ -352,7 +362,6 @@ def main():
 
     # -------- TRADES training (base LR scheduled) --------
     print('==== TRADES training ====')
-    bn_unfrozen = False
     if args.scheduler == 'step':
         milestones = [int(args.epochs_fusion * 0.5), int(args.epochs_fusion * 0.75)]
         scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
@@ -403,11 +412,6 @@ def main():
                 correct += (pred == y).sum().item()
                 total += y.size(0)
 
-        if not bn_unfrozen and ep >= 40:
-            unfreeze_bn(fusion)
-            bn_unfrozen = True
-            print(f'[INFO] Unfroze BN at epoch {ep}')
-
         if scheduler is not None:
             scheduler.step()
 
@@ -422,8 +426,15 @@ def main():
                         p.data.copy_(ema.shadow[n])
             print('[INFO] Applied EMA weights to final checkpoint')
 
-        torch.save(fusion.state_dict(),
-                   f'{args.model_dir}/fusion-epoch{ep}.pt')
+        torch.save(
+            {
+                "state_dict": fusion.state_dict(),
+                "group_order": GROUP_ORDER,
+                "coarse_groups": COARSE_GROUPS,
+                "args": vars(args),
+            },
+            f'{args.model_dir}/fusion-epoch{ep}.pt'
+        )
 
 
 if __name__ == '__main__':
