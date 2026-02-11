@@ -426,15 +426,16 @@ def main():
                         p.data.copy_(ema.shadow[n])
             print('[INFO] Applied EMA weights to final checkpoint')
 
-        torch.save(
-            {
-                "state_dict": fusion.state_dict(),
-                "group_order": GROUP_ORDER,
-                "coarse_groups": COARSE_GROUPS,
-                "args": vars(args),
-            },
-            f'{args.model_dir}/fusion-epoch{ep}.pt'
-        )
+        if ep >= 41:
+            torch.save(
+                {
+                    "state_dict": fusion.state_dict(),
+                    "group_order": GROUP_ORDER,
+                    "coarse_groups": COARSE_GROUPS,
+                    "args": vars(args),
+                },
+                f'{args.model_dir}/fusion-epoch{ep}.pt'
+            )
 
 
 if __name__ == '__main__':
