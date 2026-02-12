@@ -87,8 +87,10 @@ class SoftRoutingFusion(nn.Module):
         self.margin = margin
 
     def forward(self, x, return_aux=False):
-        logits4 = self.m4(x)
-        logits6 = self.m6(x)
+        out4 = self.m4(x)
+        out6 = self.m6(x)
+        logits4 = out4[0] if isinstance(out4, (tuple, list)) else out4
+        logits6 = out6[0] if isinstance(out6, (tuple, list)) else out6
         final_logits, _, _ = soft_routing_fusion(
             logits4, logits6, a=self.a, b=self.b, T=self.T, margin=self.margin
         )
@@ -175,26 +177,19 @@ def unfreeze_bn(model):
 # =========================================================
 # Aux loss (only known classes)
 # =========================================================
-def aux_ce_loss(logits4, logits6, y, device, weight=0.02):
+def aux_ce_loss(logits4, logits6, y, lut4, lut6, weight=0.02):
     loss = 0.0
-
     if logits4 is not None:
-        mask4 = torch.isin(y, torch.tensor(VEHICLE_CLASSES, device=device))
-        if mask4.any():
-            remap4 = torch.tensor(VEHICLE_CLASSES, device=device)
-            loss += F.cross_entropy(
-                logits4[mask4],
-                torch.searchsorted(remap4, y[mask4])
-            )
+        idx4 = lut4[y]
+        m4 = idx4 != -1
+        if m4.any():
+            loss += F.cross_entropy(logits4[m4], idx4[m4])
 
     if logits6 is not None:
-        mask6 = torch.isin(y, torch.tensor(ANIMAL_CLASSES, device=device))
-        if mask6.any():
-            remap6 = torch.tensor(ANIMAL_CLASSES, device=device)
-            loss += F.cross_entropy(
-                logits6[mask6],
-                torch.searchsorted(remap6, y[mask6])
-            )
+        idx6 = lut6[y]
+        m6 = idx6 != -1
+        if m6.any():
+            loss += F.cross_entropy(logits6[m6], idx6[m6])
 
     return weight * loss
 
@@ -244,7 +239,8 @@ def train_ce_epoch(model, loader, optimizer, device):
     for x, y in loader:
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
-        logits = model(x)
+        out = model(x)
+        logits = out[0] if isinstance(out, (tuple, list)) else out
         loss = F.cross_entropy(logits, y)
         loss.backward()
         optimizer.step()
@@ -262,6 +258,15 @@ def train_ce_epoch(model, loader, optimizer, device):
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.model_dir, exist_ok=True)
+
+    def build_lut(classes, device_):
+        lut = torch.full((10,), -1, device=device_, dtype=torch.long)
+        for i, c in enumerate(classes):
+            lut[c] = i
+        return lut
+
+    lut4 = build_lut(VEHICLE_CLASSES, device)
+    lut6 = build_lut(ANIMAL_CLASSES, device)
 
     # Stage 1: weaker augmentation for 4/6-class submodels
     transform_sub = transforms.Compose([
@@ -408,7 +413,7 @@ def main():
             )
 
             out4, out6, _ = fusion(x, return_aux=True)
-            loss += aux_ce_loss(out4, out6, y, device)
+            loss += aux_ce_loss(out4, out6, y, lut4, lut6)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(fusion.parameters(), 5.0)
@@ -420,25 +425,27 @@ def main():
             bn_unfrozen = True
             print(f'[INFO] Unfroze BN at epoch {ep}')
 
+        base_lr_before = base_group_lrs[0]
         if scheduler is not None:
             for i, pg in enumerate(optimizer.param_groups):
                 pg['lr'] = base_group_lrs[i]
             scheduler.step()
             base_group_lrs = [pg['lr'] for pg in optimizer.param_groups]
 
+        test_correct, test_total = 0, 0
         fusion.eval()
         with torch.no_grad():
             ema.apply_to(fusion)
             for x, y in test_loader:
                 x, y = x.to(device), y.to(device)
                 pred = fusion(x, return_aux=True)[-1].argmax(1)
-                correct += (pred == y).sum().item()
-                total += y.size(0)
+                test_correct += (pred == y).sum().item()
+                test_total += y.size(0)
             ema.restore(fusion)
         fusion.train()
 
-        current_lr = base_group_lrs[0] * ratio
-        acc = correct / total
+        current_lr = base_lr_before * ratio
+        acc = test_correct / test_total
         print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] acc={acc*100:.2f}%, lr={current_lr:.6f}')
 
         if ep == args.epochs_fusion:
