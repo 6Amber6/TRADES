@@ -125,9 +125,16 @@ def freeze_bn(model):
             for p in m.parameters():
                 p.requires_grad = False
 
+def unfreeze_bn(model):
+    for m in model.modules():
+        if isinstance(m, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d)):
+            m.train()
+            for p in m.parameters():
+                p.requires_grad = True
+
 
 # =========================================================
-# Fusion model for 100 fine classes
+# Fusion model for 100 fine classes (uniform average fusion)
 # =========================================================
 class ParallelFusionWRN100(nn.Module):
     def __init__(self, submodels, num_classes=100, freeze_backbone=False):
@@ -137,7 +144,7 @@ class ParallelFusionWRN100(nn.Module):
             for m in self.submodels:
                 for p in m.parameters():
                     p.requires_grad = False
-        emb_dim = sum(m.nChannels for m in self.submodels)
+        emb_dim = self.submodels[0].nChannels
         self.fc = nn.Linear(emb_dim, num_classes)
 
     def forward(self, x, return_aux=False):
@@ -147,8 +154,11 @@ class ParallelFusionWRN100(nn.Module):
             emb, out = m(x, return_embedding=True)
             embs.append(emb)
             aux_outputs.append(out)
-        combined = torch.cat(embs, dim=1)
-        final_out = self.fc(combined)
+        fused = torch.zeros_like(embs[0])
+        for emb in embs:
+            fused = fused + emb
+        fused = fused / len(embs)
+        final_out = self.fc(fused)
         if return_aux:
             return aux_outputs, final_out
         return final_out
@@ -174,7 +184,7 @@ def aux_ce_loss(group_logits, y, group_defs, fine_to_coarse_t, weight=0.1):
 # =========================================================
 # Backbone LR ratio schedule (Stage 2)
 # =========================================================
-def backbone_lr_ratio(epoch, total_epochs, r1=0.15, r2=0.4, r3=0.25):
+def backbone_lr_ratio(epoch, total_epochs, r1=0.15, r2=0.5, r3=0.35):
     p1 = max(1, int(total_epochs * 0.3))
     p2 = max(p1 + 1, int(total_epochs * 0.7))
     if epoch <= p1:
@@ -202,7 +212,7 @@ parser.add_argument('--sub-depth', type=int, default=28, choices=[28, 34])
 parser.add_argument('--sub-widen', type=int, default=8, choices=[4, 8, 10])
 parser.add_argument('--aux-weight', type=float, default=0.1)
 parser.add_argument('--scheduler', type=str, default='step', choices=['step', 'cosine', 'none'])
-parser.add_argument('--model-dir', default='./model-cifar100-parallel')
+parser.add_argument('--model-dir', default='./model-cifar100-parallel-bnfix')
 args = parser.parse_args()
 
 
@@ -261,10 +271,14 @@ def main():
     transform_fusion = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
-        transforms.RandAugment(num_ops=2, magnitude=6),
+        transforms.RandAugment(num_ops=2, magnitude=7),
         transforms.ToTensor(),
         transforms.Normalize(CIFAR100_MEAN, CIFAR100_STD),
-        transforms.RandomErasing(p=0.15, scale=(0.02, 0.08), ratio=(0.3, 3.3), value='random'),
+        transforms.RandomErasing(p=0.2, scale=(0.02, 0.08), ratio=(0.3, 3.3), value='random'),
+    ])
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(CIFAR100_MEAN, CIFAR100_STD),
     ])
 
     base_train_sub = torchvision.datasets.CIFAR100(
@@ -272,6 +286,9 @@ def main():
     )
     base_train_fusion = torchvision.datasets.CIFAR100(
         root='../data', train=True, download=True, transform=transform_fusion
+    )
+    test_set = torchvision.datasets.CIFAR100(
+        root='../data', train=False, download=True, transform=transform_test
     )
 
     group_names = GROUP_ORDER
@@ -289,6 +306,10 @@ def main():
     train_loader_100 = torch.utils.data.DataLoader(
         base_train_fusion,
         batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_set,
+        batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True
     )
 
     # ================= Stage 1 =================
@@ -343,9 +364,9 @@ def main():
         map_t[torch.tensor(fine_ids, device=device)] = torch.arange(len(fine_ids), device=device)
         group_defs.append({"coarse_t": coarse_t, "map_t": map_t})
 
-    # -------- CE warmup (15 epochs, BN NOT frozen) --------
-    print('==== CE warmup (15 epochs) ====')
-    for ep in range(1, 16):
+    # -------- CE warmup (10 epochs, BN NOT frozen) --------
+    print('==== CE warmup (10 epochs) ====')
+    for ep in range(1, 11):
         fusion.train()
         for x, y in train_loader_100:
             x, y = x.to(device), y.to(device)
@@ -356,13 +377,14 @@ def main():
             torch.nn.utils.clip_grad_norm_(fusion.parameters(), 5.0)
             optimizer.step()
             ema.update(fusion)
-        print(f'[Warmup] Epoch {ep}/15, lr={optimizer.param_groups[0]["lr"]:.6f}')
+        print(f'[Warmup] Epoch {ep}/10, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
     # -------- Freeze BN AFTER warmup --------
     freeze_bn(fusion)
 
     # -------- TRADES training (base LR scheduled) --------
     print('==== TRADES training ====')
+    bn_unfrozen = False
     if args.scheduler == 'step':
         milestones = [int(args.epochs_fusion * 0.5), int(args.epochs_fusion * 0.75)]
         scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
@@ -371,11 +393,17 @@ def main():
     else:
         scheduler = None
     for ep in range(1, args.epochs_fusion + 1):
+        if (not bn_unfrozen) and ep >= 41:
+            unfreeze_bn(fusion)
+            bn_unfrozen = True
+            print(f"[INFO] Unfroze BN at epoch {ep}")
         fusion.train()
-        total, correct = 0, 0
+        if not bn_unfrozen:
+            freeze_bn(fusion)
         total_loss = 0.0
+        total_samples = 0
 
-        ratio = backbone_lr_ratio(ep, args.epochs_fusion, r1=0.15, r2=0.4, r3=0.25)
+        ratio = backbone_lr_ratio(ep, args.epochs_fusion, r1=0.15, r2=0.5, r3=0.35)
         fusion_lr = optimizer.param_groups[0]['lr']
         for g in range(1, len(optimizer.param_groups)):
             optimizer.param_groups[g]['lr'] = fusion_lr * ratio
@@ -406,19 +434,26 @@ def main():
             ema.update(fusion)
 
             total_loss += loss.item() * x.size(0)
-            with torch.no_grad():
-                ema.apply_to(fusion)
-                pred = fusion(x).argmax(1)
-                ema.restore(fusion)
-                correct += (pred == y).sum().item()
-                total += y.size(0)
+            total_samples += x.size(0)
 
         if scheduler is not None:
             scheduler.step()
 
-        acc = correct / total
-        avg_loss = total_loss / total
-        print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] train_acc={acc*100:.2f}%, train_loss={avg_loss:.4f}, lr={optimizer.param_groups[0]["lr"]:.6f}')
+        test_correct, test_total = 0, 0
+        fusion.eval()
+        with torch.no_grad():
+            ema.apply_to(fusion)
+            for x, y in test_loader:
+                x, y = x.to(device), y.to(device)
+                pred = fusion(x, return_aux=True)[-1].argmax(1)
+                test_correct += (pred == y).sum().item()
+                test_total += y.size(0)
+            ema.restore(fusion)
+        fusion.train()
+
+        acc = test_correct / test_total
+        avg_loss = total_loss / max(1, total_samples)
+        print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] test_acc={acc*100:.2f}%, train_loss={avg_loss:.4f}, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
         if ep == args.epochs_fusion:
             with torch.no_grad():
@@ -427,7 +462,7 @@ def main():
                         p.data.copy_(ema.shadow[n])
             print('[INFO] Applied EMA weights to final checkpoint')
 
-        if ep >= 41:
+        if ep >= 51:
             torch.save(
                 {
                     "state_dict": fusion.state_dict(),
