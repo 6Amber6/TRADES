@@ -455,9 +455,8 @@ def main():
                         p.data.copy_(ema.shadow[n])
             print('[INFO] Applied EMA weights to final checkpoint')
 
-        if ep >= 41:
-            torch.save(fusion.state_dict(),
-                       f'{args.model_dir}/fusion-epoch{ep}.pt')
+        torch.save(fusion.state_dict(),
+                   f'{args.model_dir}/fusion-epoch{ep}.pt')
 
 
 if __name__ == '__main__':
