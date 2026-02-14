@@ -185,6 +185,8 @@ parser.add_argument('--num-steps', type=int, default=10)
 parser.add_argument('--step-size', type=float, default=0.007)
 parser.add_argument('--beta', type=float, default=6.0)
 parser.add_argument('--model-dir', default='./model-parallel-gated')
+parser.add_argument('--resume', default='auto',
+                    help='checkpoint path or "auto" to resume from model-dir/checkpoint-last.pt')
 args = parser.parse_args()
 
 
@@ -271,19 +273,35 @@ def main():
     m4 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=4).to(device)
     m6 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=6).to(device)
 
-    opt4 = optim.SGD(m4.parameters(), lr=args.lr,
-                     momentum=args.momentum, weight_decay=args.weight_decay)
-    opt6 = optim.SGD(m6.parameters(), lr=args.lr,
-                     momentum=args.momentum, weight_decay=args.weight_decay)
+    resume_path = args.resume
+    if resume_path == 'auto':
+        resume_path = os.path.join(args.model_dir, 'checkpoint-last.pt')
 
-    print('==== Stage 1 ====')
-    for ep in range(1, args.epochs_sub + 1):
-        l4, a4 = train_ce_epoch(m4, train_loader_4, opt4, device)
-        l6, a6 = train_ce_epoch(m6, train_loader_6, opt6, device)
-        print(f'[Sub][{ep}] 4c acc={a4*100:.2f}% | 6c acc={a6*100:.2f}%')
+    resume_loaded = False
+    start_epoch = 1
+    if resume_path and os.path.isfile(resume_path):
+        checkpoint = torch.load(resume_path, map_location=device)
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            print(f'[INFO] Resuming from {resume_path}')
+            m4.load_state_dict(checkpoint['m4_state_dict'])
+            m6.load_state_dict(checkpoint['m6_state_dict'])
+            resume_loaded = True
+            start_epoch = checkpoint.get('epoch', 0) + 1
 
-    torch.save(m4.state_dict(), f'{args.model_dir}/wrn4_final.pt')
-    torch.save(m6.state_dict(), f'{args.model_dir}/wrn6_final.pt')
+    if not resume_loaded:
+        opt4 = optim.SGD(m4.parameters(), lr=args.lr,
+                         momentum=args.momentum, weight_decay=args.weight_decay)
+        opt6 = optim.SGD(m6.parameters(), lr=args.lr,
+                         momentum=args.momentum, weight_decay=args.weight_decay)
+
+        print('==== Stage 1 ====')
+        for ep in range(1, args.epochs_sub + 1):
+            l4, a4 = train_ce_epoch(m4, train_loader_4, opt4, device)
+            l6, a6 = train_ce_epoch(m6, train_loader_6, opt6, device)
+            print(f'[Sub][{ep}] 4c acc={a4*100:.2f}% | 6c acc={a6*100:.2f}%')
+
+        torch.save(m4.state_dict(), f'{args.model_dir}/wrn4_final.pt')
+        torch.save(m6.state_dict(), f'{args.model_dir}/wrn6_final.pt')
 
     # ================= Stage 2 =================
     fusion = GatedFusionWRN(m4, m6).to(device)
@@ -308,35 +326,49 @@ def main():
     )
 
     ema = EMA(fusion, decay=0.999)
+    if resume_loaded:
+        fusion.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        ema.shadow = checkpoint.get('ema_shadow', ema.shadow)
 
     # -------- CE warmup (10 epochs, BN NOT frozen) --------
-    print('==== CE warmup (10 epochs) ====')
-    for ep in range(1, 11):
-        fusion.train()
-        for x, y in train_loader_10:
-            x, y = x.to(device), y.to(device)
-            optimizer.zero_grad()
+    if not resume_loaded:
+        print('==== CE warmup (10 epochs) ====')
+        for ep in range(1, 11):
+            fusion.train()
+            for x, y in train_loader_10:
+                x, y = x.to(device), y.to(device)
+                optimizer.zero_grad()
 
-            out = fusion(x)
-            loss = F.cross_entropy(out, y)
+                out = fusion(x)
+                loss = F.cross_entropy(out, y)
 
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(fusion.parameters(), 5.0)
-            optimizer.step()
-            ema.update(fusion)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(fusion.parameters(), 5.0)
+                optimizer.step()
+                ema.update(fusion)
 
-        print(f'[Warmup] Epoch {ep}/10, lr={optimizer.param_groups[0]["lr"]:.6f}')
+            print(f'[Warmup] Epoch {ep}/10, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
-    # -------- Freeze BN AFTER warmup --------
-    freeze_bn(fusion)
+        # -------- Freeze BN AFTER warmup --------
+        freeze_bn(fusion)
+    else:
+        # Ensure BN is in the correct state after resume
+        if start_epoch <= 40:
+            freeze_bn(fusion)
 
     # -------- TRADES training with MultiStepLR (like previous code) --------
     milestones = [args.epochs_fusion // 2, int(args.epochs_fusion * 0.75)]
     scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
+    if resume_loaded and isinstance(checkpoint, dict):
+        sched_state = checkpoint.get('scheduler_state_dict')
+        if sched_state is not None:
+            scheduler.load_state_dict(sched_state)
 
     print('==== TRADES training ====')
     bn_unfrozen = False
-    for ep in range(1, args.epochs_fusion + 1):
+    bn_unfrozen = start_epoch >= 41
+    for ep in range(start_epoch, args.epochs_fusion + 1):
         fusion.train()
         if not bn_unfrozen:
             freeze_bn(fusion)
@@ -409,6 +441,18 @@ def main():
 
         torch.save(fusion.state_dict(),
                    f'{args.model_dir}/fusion-epoch{ep}.pt')
+        torch.save(
+            {
+                'epoch': ep,
+                'model_state_dict': fusion.state_dict(),
+                'm4_state_dict': m4.state_dict(),
+                'm6_state_dict': m6.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+                'ema_shadow': ema.shadow,
+            },
+            os.path.join(args.model_dir, 'checkpoint-last.pt')
+        )
 
 
 if __name__ == '__main__':
