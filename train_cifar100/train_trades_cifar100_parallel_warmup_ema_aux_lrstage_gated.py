@@ -190,7 +190,7 @@ def aux_ce_loss(group_logits, y, group_defs, fine_to_coarse_t, weight=0.1):
 # =========================================================
 # Backbone LR ratio schedule (Stage 2)
 # =========================================================
-def backbone_lr_ratio(epoch, total_epochs, r1=0.2, r2=0.2, r3=0.2):
+def backbone_lr_ratio(epoch, total_epochs, r1=0.4, r2=0.4, r3=0.4):
     return r1
 
 
@@ -263,7 +263,6 @@ def main():
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize(CIFAR100_MEAN, CIFAR100_STD),
         transforms.RandomErasing(p=0.05, scale=(0.02, 0.08), ratio=(0.3, 3.3), value='random'),
     ])
 
@@ -273,12 +272,10 @@ def main():
         transforms.RandomHorizontalFlip(),
         transforms.RandAugment(num_ops=2, magnitude=7),
         transforms.ToTensor(),
-        transforms.Normalize(CIFAR100_MEAN, CIFAR100_STD),
         transforms.RandomErasing(p=0.2, scale=(0.02, 0.08), ratio=(0.3, 3.3), value='random'),
     ])
     transform_test = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize(CIFAR100_MEAN, CIFAR100_STD),
     ])
 
     base_train_sub = torchvision.datasets.CIFAR100(
@@ -414,8 +411,8 @@ def main():
                 epsilon=args.epsilon,
                 perturb_steps=args.num_steps,
                 beta=args.beta,
-                data_mean=CIFAR100_MEAN,
-                data_std=CIFAR100_STD
+                data_mean=None,
+                data_std=None
             )
 
             aux_logits, _ = fusion(x, return_aux=True)
