@@ -344,7 +344,12 @@ def main():
 
             print(f'[Warmup] Epoch {ep}/10, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
-        # -------- BN remains unfrozen --------
+        # -------- Freeze BN AFTER warmup --------
+        freeze_bn(fusion)
+    else:
+        # Ensure BN is in the correct state after resume
+        if start_epoch <= 40:
+            freeze_bn(fusion)
 
     # -------- TRADES training with MultiStepLR (like previous code) --------
     milestones = [args.epochs_fusion // 2, int(args.epochs_fusion * 0.75)]
@@ -355,8 +360,11 @@ def main():
             scheduler.load_state_dict(sched_state)
 
     print('==== TRADES training ====')
+    bn_unfrozen = start_epoch >= 41
     for ep in range(start_epoch, args.epochs_fusion + 1):
         fusion.train()
+        if not bn_unfrozen:
+            freeze_bn(fusion)
         total, correct = 0, 0
 
         ratio = backbone_lr_ratio(ep, args.epochs_fusion)
@@ -389,6 +397,12 @@ def main():
             torch.nn.utils.clip_grad_norm_(fusion.parameters(), 5.0)
             optimizer.step()
             ema.update(fusion)
+
+        # Unfreeze BN after 40 TRADES epochs
+        if (not bn_unfrozen) and ep >= 41:
+            unfreeze_bn(fusion)
+            bn_unfrozen = True
+            print(f'[INFO] Unfroze BN at epoch {ep}')
 
         # Update learning rate
         scheduler.step()
