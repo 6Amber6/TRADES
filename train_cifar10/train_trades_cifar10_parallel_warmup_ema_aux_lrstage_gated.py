@@ -160,14 +160,8 @@ class GatedFusionWRN(nn.Module):
 # =========================================================
 # Backbone LR ratio schedule (Stage 2)
 # =========================================================
-def backbone_lr_ratio(epoch, total_epochs, r1=0.15, r2=0.5, r3=0.35):
-    p1 = max(1, int(total_epochs * 0.3))
-    p2 = max(p1 + 1, int(total_epochs * 0.7))
-    if epoch <= p1:
-        return r1
-    if epoch <= p2:
-        return r2
-    return r3
+def backbone_lr_ratio(epoch, total_epochs, r1=0.2, r2=0.2, r3=0.2):
+    return r1
 
 
 # =========================================================
@@ -350,12 +344,7 @@ def main():
 
             print(f'[Warmup] Epoch {ep}/10, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
-        # -------- Freeze BN AFTER warmup --------
-        freeze_bn(fusion)
-    else:
-        # Ensure BN is in the correct state after resume
-        if start_epoch <= 40:
-            freeze_bn(fusion)
+        # -------- BN remains unfrozen --------
 
     # -------- TRADES training with MultiStepLR (like previous code) --------
     milestones = [args.epochs_fusion // 2, int(args.epochs_fusion * 0.75)]
@@ -366,18 +355,15 @@ def main():
             scheduler.load_state_dict(sched_state)
 
     print('==== TRADES training ====')
-    bn_unfrozen = False
-    bn_unfrozen = start_epoch >= 41
     for ep in range(start_epoch, args.epochs_fusion + 1):
         fusion.train()
-        if not bn_unfrozen:
-            freeze_bn(fusion)
         total, correct = 0, 0
 
-        ratio = backbone_lr_ratio(ep, args.epochs_fusion, r1=0.15, r2=0.5, r3=0.35)
+        ratio = backbone_lr_ratio(ep, args.epochs_fusion)
         fusion_lr = optimizer.param_groups[0]['lr']
         optimizer.param_groups[1]['lr'] = fusion_lr * ratio
         optimizer.param_groups[2]['lr'] = fusion_lr * ratio
+        optimizer.param_groups[3]['lr'] = fusion_lr
 
         for x, y in train_loader_10:
             x, y = x.to(device), y.to(device)
@@ -404,13 +390,6 @@ def main():
             optimizer.step()
             ema.update(fusion)
 
-        # Unfreeze BN after 40 TRADES epochs (like previous code)
-        # This allows BN stats to adapt to adversarial training
-        if not bn_unfrozen and ep >= 40:
-            unfreeze_bn(fusion)
-            bn_unfrozen = True
-            print(f'[INFO] Unfroze BN at epoch {ep}')
-        
         # Update learning rate
         scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']

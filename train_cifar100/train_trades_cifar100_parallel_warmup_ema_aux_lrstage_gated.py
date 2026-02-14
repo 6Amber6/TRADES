@@ -190,14 +190,8 @@ def aux_ce_loss(group_logits, y, group_defs, fine_to_coarse_t, weight=0.1):
 # =========================================================
 # Backbone LR ratio schedule (Stage 2)
 # =========================================================
-def backbone_lr_ratio(epoch, total_epochs, r1=0.15, r2=0.5, r3=0.35):
-    p1 = max(1, int(total_epochs * 0.3))
-    p2 = max(p1 + 1, int(total_epochs * 0.7))
-    if epoch <= p1:
-        return r1
-    if epoch <= p2:
-        return r2
-    return r3
+def backbone_lr_ratio(epoch, total_epochs, r1=0.2, r2=0.2, r3=0.2):
+    return r1
 
 
 # =========================================================
@@ -386,12 +380,8 @@ def main():
             ema.update(fusion)
         print(f'[Warmup] Epoch {ep}/10, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
-    # -------- Freeze BN AFTER warmup --------
-    freeze_bn(fusion)
-
     # -------- TRADES training (base LR scheduled) --------
     print('==== TRADES training ====')
-    bn_unfrozen = False
     if args.scheduler == 'step':
         milestones = [int(args.epochs_fusion * 0.5), int(args.epochs_fusion * 0.75)]
         scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
@@ -400,20 +390,16 @@ def main():
     else:
         scheduler = None
     for ep in range(1, args.epochs_fusion + 1):
-        if (not bn_unfrozen) and ep >= 51:
-            unfreeze_bn(fusion)
-            bn_unfrozen = True
-            print(f"[INFO] Unfroze BN at epoch {ep}")
         fusion.train()
-        if not bn_unfrozen:
-            freeze_bn(fusion)
         total_loss = 0.0
         total_samples = 0
 
-        ratio = backbone_lr_ratio(ep, args.epochs_fusion, r1=0.15, r2=0.5, r3=0.35)
+        ratio = backbone_lr_ratio(ep, args.epochs_fusion)
         fusion_lr = optimizer.param_groups[0]['lr']
-        for g in range(1, len(optimizer.param_groups)):
+        # submodels groups: 1 .. (N_submodels), keep gate lr same as fc
+        for g in range(1, 1 + len(fusion.submodels)):
             optimizer.param_groups[g]['lr'] = fusion_lr * ratio
+        optimizer.param_groups[1 + len(fusion.submodels)]['lr'] = fusion_lr
 
         for x, y in train_loader_100:
             x, y = x.to(device), y.to(device)
