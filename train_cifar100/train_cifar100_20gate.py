@@ -172,6 +172,7 @@ parser.add_argument('--num-steps', type=int, default=10)
 parser.add_argument('--step-size', type=float, default=0.007)
 parser.add_argument('--beta', type=float, default=6.0)
 parser.add_argument('--model-dir', default='./model-cifar100-20gate')
+parser.add_argument('--data-dir', default='../data')
 parser.add_argument('--resume', default='auto',
                     help='checkpoint path or "auto" to resume from model-dir/checkpoint-last.pt')
 parser.add_argument('--aux-weight', type=float, default=0.1)
@@ -249,21 +250,25 @@ def main():
     ])
 
     base_train_sub = torchvision.datasets.CIFAR100(
-        root='../data', train=True, download=True, transform=transform_sub
+        root=args.data_dir, train=True, download=True, transform=transform_sub
     )
     base_train_fusion = torchvision.datasets.CIFAR100(
-        root='../data', train=True, download=True, transform=transform_fusion
+        root=args.data_dir, train=True, download=True, transform=transform_fusion
     )
     test_set = torchvision.datasets.CIFAR100(
-        root='../data', train=False, download=True, transform=transform_test
+        root=args.data_dir, train=False, download=True, transform=transform_test
     )
     train_loader_100 = torch.utils.data.DataLoader(
         base_train_fusion,
-        batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True
+        batch_size=args.batch_size, shuffle=True,
+        num_workers=8, pin_memory=True,
+        persistent_workers=True, prefetch_factor=4
     )
     test_loader = torch.utils.data.DataLoader(
         test_set,
-        batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True
+        batch_size=args.batch_size, shuffle=False,
+        num_workers=8, pin_memory=True,
+        persistent_workers=True, prefetch_factor=4
     )
 
     # =========================================================
@@ -288,7 +293,9 @@ def main():
             expert = WRNWithEmbedding(depth=16, widen_factor=4, num_classes=len(fine_ids)).to(device)
             loader = torch.utils.data.DataLoader(
                 CIFARFineSubset(base_train_sub, fine_ids),
-                batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True
+                batch_size=args.batch_size, shuffle=True,
+                num_workers=8, pin_memory=True,
+                persistent_workers=True, prefetch_factor=4
             )
             opt = optim.SGD(expert.parameters(), lr=args.lr,
                             momentum=args.momentum, weight_decay=args.weight_decay)
@@ -429,22 +436,26 @@ def main():
         if scheduler is not None:
             scheduler.step()
 
-        # EMA evaluation
-        test_correct, test_total = 0, 0
-        fusion.eval()
-        with torch.no_grad():
-            ema.apply_to(fusion)
-            for x, y in test_loader:
-                x, y = x.to(device), y.to(device)
-                pred = fusion(x).argmax(1)
-                test_correct += (pred == y).sum().item()
-                test_total += y.size(0)
-            ema.restore(fusion)
-        fusion.train()
-
-        acc = test_correct / max(1, test_total)
+        acc = None
+        if ep % 5 == 0 or ep == args.epochs_fusion:
+            # EMA evaluation (every 5 epochs)
+            test_correct, test_total = 0, 0
+            fusion.eval()
+            with torch.no_grad():
+                ema.apply_to(fusion)
+                for x, y in test_loader:
+                    x, y = x.to(device), y.to(device)
+                    pred = fusion(x).argmax(1)
+                    test_correct += (pred == y).sum().item()
+                    test_total += y.size(0)
+                ema.restore(fusion)
+            fusion.train()
+            acc = test_correct / max(1, test_total)
         avg_loss = total_loss / max(1, total_samples)
-        print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] test_acc={acc*100:.2f}%, train_loss={avg_loss:.4f}, lr={optimizer.param_groups[0]["lr"]:.6f}')
+        if acc is None:
+            print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] test_acc=skip, train_loss={avg_loss:.4f}, lr={optimizer.param_groups[0]["lr"]:.6f}')
+        else:
+            print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] test_acc={acc*100:.2f}%, train_loss={avg_loss:.4f}, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
         if ep >= 40 and ep % 5 == 0:
             torch.save(
