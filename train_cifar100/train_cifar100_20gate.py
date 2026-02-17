@@ -457,7 +457,7 @@ def main():
         else:
             print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] test_acc={acc*100:.2f}%, train_loss={avg_loss:.4f}, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
-        if ep >= 40 and ep % 5 == 0:
+        if ep % 5 == 0:
             torch.save(
                 {
                     'epoch': ep,
