@@ -161,7 +161,7 @@ def aux_ce_loss(expert_logits, y, group_maps, weight=0.1):
 # Arguments
 # =========================================================
 parser = argparse.ArgumentParser(description='TRADES CIFAR-100 20-expert soft routing (WRN-16-4)')
-parser.add_argument('--epochs-sub', type=int, default=60)
+parser.add_argument('--epochs-sub', type=int, default=100)
 parser.add_argument('--epochs-fusion', type=int, default=100)
 parser.add_argument('--batch-size', type=int, default=128)
 parser.add_argument('--lr', type=float, default=0.1)
