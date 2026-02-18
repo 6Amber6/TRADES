@@ -1,3 +1,8 @@
+# Parallel training of 20 experts + gate
+# No unknown class is used in this version.
+# No shared backbone is used in this version.
+# WideResNet 16-4 *20      
+
 from __future__ import print_function
 import os
 import argparse

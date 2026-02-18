@@ -1,3 +1,6 @@
+# WideResNet 28-8 *4
+
+
 from __future__ import print_function
 import os
 import argparse
