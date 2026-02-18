@@ -1,5 +1,7 @@
 # WideResNet 28-8 *4
-
+# feature-level soft routing
+# No unknown class
+# No shared Backbone
 
 from __future__ import print_function
 import os
