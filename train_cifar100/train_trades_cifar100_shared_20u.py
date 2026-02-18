@@ -97,6 +97,44 @@ class CIFARCoarseUnknown(torch.utils.data.Dataset):
         return x, self.unknown_idx
 
 
+class CIFARCoarseUnknownSubset(torch.utils.data.Dataset):
+    """Dataset that includes all known-class samples plus a sampled subset of non-known samples
+    as the `unknown` class. unknown_ratio controls how many unknowns per known sample.
+    """
+    def __init__(self, base_dataset, fine_ids, unknown_idx, unknown_ratio=1.0, seed=0):
+        self.base = base_dataset
+        self.fine_ids = set(fine_ids)
+        self.unknown_idx = unknown_idx
+        self.map = {c: i for i, c in enumerate(sorted(list(self.fine_ids)))}
+
+        # Use base_dataset.targets to avoid calling __getitem__ (which reads images)
+        labels = base_dataset.targets
+        known_idx = [i for i, y in enumerate(labels) if y in self.fine_ids]
+        unk_pool = [i for i, y in enumerate(labels) if y not in self.fine_ids]
+
+        g = torch.Generator()
+        g.manual_seed(seed)
+        num_unk = int(len(known_idx) * float(unknown_ratio))
+        if num_unk > 0 and len(unk_pool) > 0:
+            perm = torch.randperm(len(unk_pool), generator=g).tolist()
+            chosen = [unk_pool[j] for j in perm[:min(num_unk, len(unk_pool))]]
+        else:
+            chosen = []
+
+        # combine known and chosen unknown indices
+        self.indices = known_idx + chosen
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, k):
+        x, y = self.base[self.indices[k]]
+        y = int(y)
+        if y in self.map:
+            return x, self.map[y]
+        return x, self.unknown_idx
+
+
 # =========================================================
 # BN freeze/unfreeze util
 # =========================================================
@@ -285,6 +323,8 @@ parser.add_argument('--no-unknown', dest='use_unknown', action='store_false', he
 parser.add_argument('--resume', action='store_true', help='Resume from checkpoint')
 parser.add_argument('--checkpoint', type=str, default=None, help='Path to checkpoint file for resuming')
 parser.add_argument('--model-dir', default='./model-cifar100-shared-20u')
+parser.add_argument('--unknown-ratio', type=float, default=1.0, help='Ratio unknown:known to sample per head')
+parser.add_argument('--unknown-seed', type=int, default=0, help='Random seed for unknown sampling per head')
 args = parser.parse_args()
 
 
@@ -340,23 +380,29 @@ def main():
         test_set, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True
     )
 
-    # Per-head loaders (known + unknown)
+    # Per-head loaders (known + unknown subset)
     head_loaders = []
-    for fine_ids in coarse_to_fine:
+    for head_idx, fine_ids in enumerate(coarse_to_fine):
         if use_unknown:
-            ds = CIFARCoarseUnknown(base_train, fine_ids, unknown_idx=len(fine_ids))
+            # sample a subset of non-known samples to serve as unknowns for this head
+            ds = CIFARCoarseUnknownSubset(
+                base_train,
+                fine_ids,
+                unknown_idx=len(fine_ids),
+                unknown_ratio=args.unknown_ratio,
+                seed=(args.unknown_seed + head_idx)
+            )
         else:
             # 不使用unknown class：只用已知类数据
-            ds = CIFARCoarseUnknown(base_train, fine_ids, unknown_idx=len(fine_ids))
-            # 但通过设置自定义数据集过滤
+            # 通过设置自定义数据集过滤
             class CIFARCoarseKnownOnly(torch.utils.data.Dataset):
                 def __init__(self, base_dataset, fine_ids):
                     self.base = base_dataset
                     self.fine_ids = list(fine_ids)
                     self.map = {c: i for i, c in enumerate(self.fine_ids)}
-                    # 过滤数据集
-                    self.valid_indices = [i for i in range(len(base_dataset)) 
-                                         if base_dataset[i][1] in self.fine_ids]
+                    # Use base_dataset.targets to avoid calling __getitem__ (which reads images)
+                    labels = base_dataset.targets
+                    self.valid_indices = [i for i, y in enumerate(labels) if y in self.fine_ids]
                 
                 def __len__(self):
                     return len(self.valid_indices)
@@ -365,9 +411,9 @@ def main():
                     x, y = self.base[self.valid_indices[i]]
                     y = int(y)
                     return x, self.map[y]
-            
+
             ds = CIFARCoarseKnownOnly(base_train, fine_ids)
-        
+
         head_loaders.append(torch.utils.data.DataLoader(
             ds, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=True
         ))
