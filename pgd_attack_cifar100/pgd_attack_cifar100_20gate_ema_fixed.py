@@ -76,22 +76,14 @@ def pgd_whitebox(model, X, y, epsilon, num_steps, step_size, random_start=True):
     """
     PGD attack in pixel space [0,1].
     Input X should be in [0,1].
-    Normalization is applied dynamically before each model forward.
+    Model is trained on pixel-space (no normalization).
     Uses standard autograd-based PGD (no .data, no Variable, no per-step optimizer).
     """
     model.eval()
     
-    # Prepare normalization tensors
-    mean = torch.tensor(CIFAR100_MEAN, device=X.device).view(1, 3, 1, 1)
-    std = torch.tensor(CIFAR100_STD, device=X.device).view(1, 3, 1, 1)
-    
-    def normalize(z):
-        """Apply CIFAR-100 normalization."""
-        return (z - mean) / std
-    
-    # Evaluate clean accuracy in pixel space
+    # Evaluate clean accuracy in pixel space (no normalization)
     with torch.no_grad():
-        err = (model(normalize(X)).argmax(1) != y).float().sum().item()
+        err = (model(X).argmax(1) != y).float().sum().item()
 
     # Initialize adversarial input in pixel space [0,1]
     X0 = X.detach()
@@ -103,7 +95,7 @@ def pgd_whitebox(model, X, y, epsilon, num_steps, step_size, random_start=True):
     # PGD steps (standard autograd-based approach)
     for _ in range(num_steps):
         X_adv = X_adv.detach().requires_grad_(True)
-        loss = nn.CrossEntropyLoss()(model(normalize(X_adv)), y)
+        loss = nn.CrossEntropyLoss()(model(X_adv), y)
         grad = torch.autograd.grad(loss, X_adv)[0]
         
         # Update in pixel space
@@ -114,7 +106,7 @@ def pgd_whitebox(model, X, y, epsilon, num_steps, step_size, random_start=True):
 
     # Evaluate robust accuracy
     with torch.no_grad():
-        err_pgd = (model(normalize(X_adv)).argmax(1) != y).float().sum().item()
+        err_pgd = (model(X_adv).argmax(1) != y).float().sum().item()
     
     return err, err_pgd
 
