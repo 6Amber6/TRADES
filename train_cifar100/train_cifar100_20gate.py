@@ -1,8 +1,3 @@
-# Parallel training of 20 experts + gate
-# No unknown class is used in this version.
-# No shared backbone is used in this version.
-# WideResNet 16-4 *20      
-
 from __future__ import print_function
 import os
 import argparse
@@ -16,6 +11,8 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 from torchvision import transforms
 
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.parallel_wrn import WRNWithEmbedding
 from trades import trades_loss
 
@@ -278,14 +275,14 @@ def main():
     )
 
     # =========================================================
-    # Stage 1: pretrain 20 experts (WRN-16-4)
+    # Stage 1: pretrain 20 experts (WRN-16-4) with per-expert resume
     # =========================================================
     resume_path = args.resume
     if resume_path == 'auto':
         resume_path = os.path.join(args.model_dir, 'checkpoint-last.pt')
 
     resume_loaded = False
-    start_epoch = 1
+    start_epoch = 1  # for Stage 2 fusion
     if resume_path and os.path.isfile(resume_path):
         checkpoint = torch.load(resume_path, map_location=device)
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
@@ -296,6 +293,14 @@ def main():
     if not resume_loaded:
         print('==== Stage 1: Pretrain 20 experts (WRN-16-4) ====')
         for i, fine_ids in enumerate(coarse_to_fine):
+            final_path = os.path.join(args.model_dir, f'expert_{i:02d}_final.pt')
+            ckpt_path = os.path.join(args.model_dir, f'expert_{i:02d}_checkpoint.pt')
+
+            # If final checkpoint exists, skip this expert
+            if os.path.isfile(final_path):
+                print(f'[Expert {i:02d}] final checkpoint found, skipping pretraining.')
+                continue
+
             expert = WRNWithEmbedding(depth=16, widen_factor=4, num_classes=len(fine_ids)).to(device)
             loader = torch.utils.data.DataLoader(
                 CIFARFineSubset(base_train_sub, fine_ids),
@@ -305,11 +310,40 @@ def main():
             )
             opt = optim.SGD(expert.parameters(), lr=args.lr,
                             momentum=args.momentum, weight_decay=args.weight_decay)
-            for ep in range(1, args.epochs_sub + 1):
+
+            # Per-expert resume
+            start_ep_expert = 1
+            if os.path.isfile(ckpt_path):
+                expert_ckpt = torch.load(ckpt_path, map_location=device)
+                if isinstance(expert_ckpt, dict) and 'model_state_dict' in expert_ckpt:
+                    expert.load_state_dict(expert_ckpt['model_state_dict'])
+                    if 'optimizer_state_dict' in expert_ckpt and expert_ckpt['optimizer_state_dict'] is not None:
+                        opt.load_state_dict(expert_ckpt['optimizer_state_dict'])
+                    start_ep_expert = expert_ckpt.get('epoch', 0) + 1
+                    print(f'[Expert {i:02d}] Resuming from epoch {start_ep_expert}')
+
+            for ep in range(start_ep_expert, args.epochs_sub + 1):
                 l, a = train_ce_epoch(expert, loader, opt, device)
                 if ep % 10 == 0 or ep == 1 or ep == args.epochs_sub:
                     print(f'[Expert {i:02d}][{ep}/{args.epochs_sub}] loss={l:.4f} acc={a*100:.2f}%')
-            torch.save(expert.state_dict(), os.path.join(args.model_dir, f'expert_{i:02d}_final.pt'))
+
+                # Save per-epoch checkpoint for this expert (overwrites same file)
+                expert_ckpt = {
+                    'epoch': ep,
+                    'model_state_dict': expert.state_dict(),
+                    'optimizer_state_dict': opt.state_dict(),
+                }
+                torch.save(expert_ckpt, ckpt_path)
+
+            # Save final expert weights and remove intermediate checkpoint
+            torch.save(expert.state_dict(), final_path)
+            try:
+                if os.path.isfile(ckpt_path):
+                    os.remove(ckpt_path)
+            except OSError:
+                print(f'Error removing checkpoint file: {ckpt_path}')
+                pass
+
             del expert
             torch.cuda.empty_cache()
 
@@ -320,8 +354,13 @@ def main():
     for i, fine_ids in enumerate(coarse_to_fine):
         m = WRNWithEmbedding(depth=16, widen_factor=4, num_classes=len(fine_ids)).to(device)
         ckpt_path = os.path.join(args.model_dir, f'expert_{i:02d}_final.pt')
-        if os.path.isfile(ckpt_path):
-            m.load_state_dict(torch.load(ckpt_path, map_location=device))
+        if not os.path.isfile(ckpt_path):
+            raise FileNotFoundError(
+                f'Expected expert checkpoint not found: {ckpt_path}. '
+                f'Please complete Stage 1 pretraining for all experts before Stage 2.'
+            )
+        state = torch.load(ckpt_path, map_location=device)
+        m.load_state_dict(state)
         experts.append(m)
 
     gate = WRNWithEmbedding(depth=16, widen_factor=4, num_classes=20).to(device)
@@ -463,7 +502,8 @@ def main():
         else:
             print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] test_acc={acc*100:.2f}%, train_loss={avg_loss:.4f}, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
-        if ep % 5 == 0:
+        # Always checkpoint at final epoch, and every 5 epochs during training
+        if ep % 5 == 0 or ep == args.epochs_fusion:
             torch.save(
                 {
                     'epoch': ep,
