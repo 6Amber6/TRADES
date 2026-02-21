@@ -1,0 +1,64 @@
+# Ex 1
+cd /Users/litong/workspace/TRADES/train_cifar10
+
+python train_trades_cifar10_parallel_warmup_ema_aux_lrstage.py \
+  --epochs-sub 100 \
+  --epochs-fusion 100 \
+  --batch-size 128 \
+  --lr 0.1 \
+  --momentum 0.9 \
+  --weight-decay 5e-4 \
+  --epsilon 0.031 \
+  --num-steps 10 \
+  --step-size 0.007 \
+  --beta 6.0 \
+  --model-dir ./model-parallel
+
+# Ex 2
+python train_cifar10/train_trades_cifar10_parallel_warmup_ema_aux_lrstage_gated.py \
+  --epochs-sub 100 \
+  --epochs-fusion 100 \
+  --batch-size 128 \
+  --lr 0.1 \
+  --momentum 0.9 \
+  --weight-decay 5e-4 \
+  --epsilon 0.031 \
+  --num-steps 10 \
+  --step-size 0.007 \
+  --beta 6.0 \
+  --model-dir ./model-parallel-gated
+
+# Ex 3
+python train_cifar10/train_trades_cifar10_softrouting.py \
+  --epochs-sub 100 \
+  --epochs-fusion 100 \
+  --batch-size 128 \
+  --lr 0.1 \
+  --momentum 0.9 \
+  --weight-decay 5e-4 \
+  --epsilon 0.031 \
+  --num-steps 10 \
+  --step-size 0.007 \
+  --beta 6.0 \
+  --model-dir ./model-parallel-softrouting \
+  --route-a 1.0 \
+  --route-b 0.5 \
+  --route-T 1.0
+
+  # Ex 4
+  python train_cifar10/train_trades_cifar10_softrouting_confidence.py \
+  --epochs-sub 100 \
+  --epochs-fusion 100 \
+  --batch-size 128 \
+  --lr 0.1 \
+  --momentum 0.9 \
+  --weight-decay 5e-4 \
+  --epsilon 0.031 \
+  --num-steps 10 \
+  --step-size 0.007 \
+  --beta 6.0 \
+  --model-dir ./model-parallel-softrouting-conf \
+  --route-T 1.0
+
+
+

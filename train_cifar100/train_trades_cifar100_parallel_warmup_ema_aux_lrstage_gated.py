@@ -218,6 +218,8 @@ parser.add_argument('--sub-widen', type=int, default=8, choices=[4, 8, 10])
 parser.add_argument('--aux-weight', type=float, default=0.1)
 parser.add_argument('--scheduler', type=str, default='step', choices=['step', 'cosine', 'none'])
 parser.add_argument('--model-dir', default='./model-cifar100-parallel-gated')
+parser.add_argument('--resume', default='auto',
+                    help='checkpoint path or "auto" to resume from model-dir/checkpoint-last.pt')
 args = parser.parse_args()
 
 
@@ -317,20 +319,46 @@ def main():
         batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True
     )
 
+    # ================= Resume =================
+    resume_path = args.resume
+    if resume_path == 'auto':
+        resume_path = os.path.join(args.model_dir, 'checkpoint-last.pt')
+
+    resume_loaded = False
+    start_epoch = 1
+    warmup_start = 1
+    checkpoint = None
+    if resume_path and os.path.isfile(resume_path):
+        checkpoint = torch.load(resume_path, map_location=device)
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            print(f'[INFO] Resuming from {resume_path}')
+            resume_loaded = True
+            stage2_epoch = checkpoint.get('stage2_epoch', 0)
+            if stage2_epoch <= 10:
+                warmup_start = stage2_epoch + 1
+                start_epoch = 1
+            else:
+                warmup_start = 11
+                start_epoch = stage2_epoch - 10 + 1
+
     # ================= Stage 1 =================
     submodels = []
-    print('==== Stage 1 (CIFAR-100 fine, 4 groups) ====')
-    for i, loader in enumerate(group_loaders):
+    for i in range(len(group_loaders)):
         m = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=len(group_fine[i])).to(device)
-        opt = optim.SGD(m.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-        for ep in range(1, args.epochs_sub + 1):
-            _, a = train_ce_epoch(m, loader, opt, device)
-            print(f'[Sub][{ep}] {group_names[i]} acc={a*100:.2f}%')
-        torch.save(m.state_dict(), f'{args.model_dir}/wrn_{group_names[i]}_final.pt')
-        m.to('cpu')
         submodels.append(m)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+
+    if not resume_loaded:
+        print('==== Stage 1 (CIFAR-100 fine, 4 groups) ====')
+        for i, loader in enumerate(group_loaders):
+            m = submodels[i]
+            opt = optim.SGD(m.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+            for ep in range(1, args.epochs_sub + 1):
+                _, a = train_ce_epoch(m, loader, opt, device)
+                print(f'[Sub][{ep}] {group_names[i]} acc={a*100:.2f}%')
+            torch.save(m.state_dict(), f'{args.model_dir}/wrn_{group_names[i]}_final.pt')
+            m.to('cpu')
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     # ================= Stage 2 =================
     for m in submodels:
@@ -361,6 +389,18 @@ def main():
 
     ema = EMA(fusion, decay=0.999)
 
+    if resume_loaded and checkpoint is not None:
+        fusion.load_state_dict(checkpoint['model_state_dict'])
+        if 'optimizer_state_dict' in checkpoint:
+            ckpt_opt = checkpoint['optimizer_state_dict']
+            n_cur, n_ckpt = len(optimizer.param_groups), len(ckpt_opt.get('param_groups', []))
+            if n_cur != n_ckpt:
+                raise ValueError(f'[RESUME] optimizer param_groups mismatch: current={n_cur}, checkpoint={n_ckpt}')
+            optimizer.load_state_dict(ckpt_opt)
+            print(f'[RESUME] optimizer loaded: {n_cur} param_groups, lr={[pg["lr"] for pg in optimizer.param_groups]}')
+        if 'ema_shadow' in checkpoint:
+            ema.shadow = checkpoint['ema_shadow']
+
     # Precompute maps for aux loss
     fine_to_coarse_t = torch.tensor(CIFAR100_FINE_TO_COARSE, device=device, dtype=torch.long)
     group_defs = []
@@ -372,7 +412,7 @@ def main():
 
     # -------- CE warmup (10 epochs, BN NOT frozen) --------
     print('==== CE warmup (10 epochs) ====')
-    for ep in range(1, 11):
+    for ep in range(warmup_start, 11):
         fusion.train()
         for x, y in train_loader_100:
             x, y = x.to(device), y.to(device)
@@ -385,6 +425,14 @@ def main():
             ema.update(fusion)
         print(f'[Warmup] Epoch {ep}/10, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
+        ckpt = {
+            'model_state_dict': fusion.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'ema_shadow': ema.shadow,
+            'stage2_epoch': ep,
+        }
+        torch.save(ckpt, os.path.join(args.model_dir, 'checkpoint-last.pt'))
+
     # -------- TRADES training (base LR scheduled) --------
     print('==== TRADES training ====')
     if args.scheduler == 'step':
@@ -394,7 +442,18 @@ def main():
         scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs_fusion)
     else:
         scheduler = None
-    for ep in range(1, args.epochs_fusion + 1):
+
+    if resume_loaded and checkpoint is not None and scheduler is not None and checkpoint.get('scheduler_state_dict') is not None:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        expected_last = start_epoch - 1
+        actual_last = getattr(scheduler, 'last_epoch', getattr(scheduler, '_last_epoch', None))
+        sched_name = type(scheduler).__name__
+        print(f'[RESUME] scheduler ({sched_name}) loaded: last_epoch={actual_last}, expected={expected_last} (resume from TRADES ep {start_epoch})')
+        if actual_last is not None and actual_last != expected_last:
+            print(f'[RESUME] WARNING: scheduler last_epoch mismatch, LR curve may be offset!')
+        print(f'[RESUME] current base_lr={optimizer.param_groups[0]["lr"]:.6f}')
+
+    for ep in range(start_epoch, args.epochs_fusion + 1):
         fusion.train()
         total_loss = 0.0
         total_samples = 0
@@ -453,14 +512,22 @@ def main():
         avg_loss = total_loss / max(1, total_samples)
         print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] test_acc={acc*100:.2f}%, train_loss={avg_loss:.4f}, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
-        if ep == args.epochs_fusion:
-            with torch.no_grad():
-                for n, p in fusion.named_parameters():
-                    if n in ema.shadow:
-                        p.data.copy_(ema.shadow[n])
-            print('[INFO] Applied EMA weights to final checkpoint')
+        ckpt = {
+            'model_state_dict': fusion.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+            'ema_shadow': ema.shadow,
+            'stage2_epoch': 10 + ep,
+        }
+        torch.save(ckpt, os.path.join(args.model_dir, 'checkpoint-last.pt'))
 
-        if ep >= 51:
+        if ep % 5 == 0 or ep == args.epochs_fusion:
+            if ep == args.epochs_fusion:
+                with torch.no_grad():
+                    for n, p in fusion.named_parameters():
+                        if n in ema.shadow:
+                            p.data.copy_(ema.shadow[n])
+                print('[INFO] Applied EMA weights to final checkpoint')
             torch.save(
                 {
                     "state_dict": fusion.state_dict(),
