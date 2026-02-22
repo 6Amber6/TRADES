@@ -56,6 +56,8 @@ class UnknownRoutingFusion100(nn.Module):
         final = torch.zeros(B, 100, device=device, dtype=group_logits[0].dtype)
         for i, (loc, owned) in enumerate(zip(group_logits, self.owned_fine)):
             known = loc[:, :len(owned)]
+            std = known.std(dim=1, keepdim=True).clamp(min=1e-6)
+            known = known / std
             final[:, owned] += w[:, i:i+1] * known
         return (group_logits, final) if return_aux else final
 

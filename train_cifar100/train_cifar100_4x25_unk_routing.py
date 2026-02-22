@@ -1,5 +1,4 @@
 # CIFAR-100: 4 experts x 25 classes, each with unknown, routing by score = a*(1-unk_self) + b*unk_others
-# Goal: exceed direct 100-class on clean & adv acc
 
 from __future__ import print_function
 import os
@@ -246,6 +245,9 @@ class UnknownRoutingFusion100(nn.Module):
         final = torch.zeros(B, 100, device=device, dtype=group_logits[0].dtype)
         for i, (loc, owned) in enumerate(zip(group_logits, self.owned_fine)):
             known = loc[:, :len(owned)]
+            # Scale by std only: align logit magnitude across experts
+            std = known.std(dim=1, keepdim=True).clamp(min=1e-6)
+            known = known / std
             final[:, owned] += w[:, i:i+1] * known
 
         if return_aux:
@@ -293,14 +295,14 @@ parser.add_argument('--step-size', type=float, default=0.007)
 parser.add_argument('--beta', type=float, default=6.0)
 parser.add_argument('--sub-depth', type=int, default=28, choices=[28, 34])
 parser.add_argument('--sub-widen', type=int, default=8, choices=[4, 8, 10])
-parser.add_argument('--aux-weight', type=float, default=0.1)
+parser.add_argument('--aux-weight', type=float, default=0.05)
 parser.add_argument('--aux-unknown-weight', type=float, default=0.3,
                     help='down-weight out-of-domain->Unknown loss; avoid experts over-predicting unknown')
 parser.add_argument('--route-a', type=float, default=1.0)
 parser.add_argument('--route-b', type=float, default=0.5)
 parser.add_argument('--route-T', type=float, default=1.0, help='fixed T if route-T-end not set')
-parser.add_argument('--route-T-start', type=float, default=2.0, help='T at epoch 1 (smoother, more robust)')
-parser.add_argument('--route-T-end', type=float, default=0.5, help='T at last epoch (sharper routing); set both for schedule')
+parser.add_argument('--route-T-start', type=float, default=1.0, help='T at epoch 1 (less smoothing than 2.0, preserve expert signal)')
+parser.add_argument('--route-T-end', type=float, default=0.2, help='T at last epoch (sharper routing); set both for schedule')
 parser.add_argument('--route-margin', type=float, default=0.0)
 parser.add_argument('--scheduler', type=str, default='step', choices=['step', 'cosine', 'none'])
 parser.add_argument('--model-dir', default='./model-cifar100-4x25-unk')
