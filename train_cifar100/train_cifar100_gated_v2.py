@@ -218,10 +218,12 @@ parser.add_argument('--aux-weight', type=float, default=0.1)
 parser.add_argument('--scheduler', type=str, default='step', choices=['step', 'cosine', 'none'])
 parser.add_argument('--model-dir', default='./model-cifar100-gated-v2')
 parser.add_argument('--resume', default='auto')
-parser.add_argument('--freeze-backbone-epochs', type=int, default=40,
+parser.add_argument('--freeze-backbone-epochs', type=int, default=80,
                     help='freeze backbone for first N TRADES epochs, then unfreeze with r1')
-parser.add_argument('--backbone-lr-ratio', type=float, default=0.05,
+parser.add_argument('--backbone-lr-ratio', type=float, default=0.01,
                     help='backbone lr = base_lr * ratio after unfreeze')
+parser.add_argument('--backbone-lr-warmup-epochs', type=int, default=10,
+                    help='linear warmup epochs for backbone lr after unfreeze')
 args = parser.parse_args()
 
 
@@ -441,17 +443,18 @@ def main():
 
     freeze_epochs = args.freeze_backbone_epochs
     r1 = args.backbone_lr_ratio
+    warmup_epochs = args.backbone_lr_warmup_epochs
 
     for ep in range(start_epoch, args.epochs_fusion + 1):
         fusion.train()
 
-        # Freezing: ep 1~40 freeze backbone, ep 41+ unfreeze with r1
+        fusion_lr = optimizer.param_groups[0]['lr']
         if ep <= freeze_epochs:
             for m in fusion.submodels:
                 for p in m.parameters():
                     p.requires_grad = False
                 freeze_bn(m)
-            fusion_lr = optimizer.param_groups[0]['lr']
+            backbone_lr = 0.0
             for g in range(1, 1 + len(fusion.submodels)):
                 optimizer.param_groups[g]['lr'] = 0.0
         else:
@@ -459,9 +462,13 @@ def main():
                 for p in m.parameters():
                     p.requires_grad = True
                 unfreeze_bn(m)
-            fusion_lr = optimizer.param_groups[0]['lr']
+            if ep <= freeze_epochs + warmup_epochs:
+                progress = (ep - freeze_epochs) / warmup_epochs
+                backbone_lr = fusion_lr * r1 * progress
+            else:
+                backbone_lr = fusion_lr * r1
             for g in range(1, 1 + len(fusion.submodels)):
-                optimizer.param_groups[g]['lr'] = fusion_lr * r1
+                optimizer.param_groups[g]['lr'] = backbone_lr
 
         total_loss = 0.0
         total_samples = 0
@@ -511,7 +518,7 @@ def main():
 
         acc = test_correct / test_total
         avg_loss = total_loss / max(1, total_samples)
-        freeze_info = 'backbone_frozen' if ep <= freeze_epochs else f'backbone_lr={fusion_lr*r1:.6f}'
+        freeze_info = 'backbone_frozen' if ep <= freeze_epochs else f'backbone_lr={backbone_lr:.6f}'
         print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] test_acc={acc*100:.2f}%, train_loss={avg_loss:.4f}, {freeze_info}')
 
         ckpt = {
