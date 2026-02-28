@@ -218,9 +218,9 @@ parser.add_argument('--aux-weight', type=float, default=0.1)
 parser.add_argument('--scheduler', type=str, default='step', choices=['step', 'cosine', 'none'])
 parser.add_argument('--model-dir', default='./model-cifar100-gated-v2')
 parser.add_argument('--resume', default='auto')
-parser.add_argument('--freeze-backbone-epochs', type=int, default=80,
+parser.add_argument('--freeze-backbone-epochs', type=int, default=0,
                     help='freeze backbone for first N TRADES epochs, then unfreeze with r1')
-parser.add_argument('--backbone-lr-ratio', type=float, default=0.01,
+parser.add_argument('--backbone-lr-ratio', type=float, default=0.3,
                     help='backbone lr = base_lr * ratio after unfreeze')
 parser.add_argument('--backbone-lr-warmup-epochs', type=int, default=10,
                     help='linear warmup epochs for backbone lr after unfreeze')
