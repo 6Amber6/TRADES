@@ -138,7 +138,7 @@ def main():
         m = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=len(fine_classes)).to(device)
         submodels.append(m)
     model = GatedFusionWRN100(submodels, num_classes=100).to(device)
-    model.load_state_dict(model_state)
+    model.load_state_dict(model_state, strict=True)
     model.eval()
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(CIFAR100_MEAN, CIFAR100_STD)])
     testset = torchvision.datasets.CIFAR100(root='../data', train=False, download=True, transform=transform)
