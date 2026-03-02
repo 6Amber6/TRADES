@@ -1,4 +1,6 @@
 """PGD evaluation for CIFAR-100 Parallel Gated v2 (proj + dropout + BN)"""
+# version 3: Dropout 0.5 -> 0.3
+
 from __future__ import print_function
 import argparse
 import torch
@@ -42,7 +44,7 @@ class GatedFusionWRN100(nn.Module):
             nn.Linear(gate_in_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
+            nn.Dropout(0.3),
             nn.Linear(hidden_dim, n_experts)
         )
         self.fc = nn.Linear(emb_dim, num_classes)

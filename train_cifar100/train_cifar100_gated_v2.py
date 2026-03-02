@@ -2,6 +2,7 @@
 # feature-level soft routing
 # Gate v2: Linear -> BN -> ReLU -> Dropout -> Linear
 # Freeze backbone first 40 ep, then unfreeze with r1=0.05
+# version 3: Dropout 0.5 -> 0.3
 
 from __future__ import print_function
 import os
@@ -132,7 +133,7 @@ def unfreeze_bn(model):
 # =========================================================
 # Gated fusion v2: projection + dropout + BN (anti-overfit)
 # - Project each 640-dim emb to 64-dim, then concat
-# - Gate: Linear -> BN -> ReLU -> Dropout(0.5) -> Linear
+# - Gate: Linear -> BN -> ReLU -> Dropout(0.3) -> Linear
 # =========================================================
 class GatedFusionWRN100(nn.Module):
     def __init__(self, submodels, num_classes=100, freeze_backbone=False, hidden_dim=256, proj_dim=64):
@@ -156,7 +157,7 @@ class GatedFusionWRN100(nn.Module):
             nn.Linear(gate_in_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
+            nn.Dropout(0.3),
             nn.Linear(hidden_dim, n_experts)
         )
         self.fc = nn.Linear(emb_dim, num_classes)
