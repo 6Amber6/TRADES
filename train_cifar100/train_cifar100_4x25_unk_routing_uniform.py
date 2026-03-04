@@ -532,8 +532,17 @@ def main():
             m = submodels[i]
             opt = optim.SGD(m.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
             for ep in range(1, args.epochs_sub + 1):
+                # Stage 1 lr schedule: ep1~40 lr=0.1, ep41~60 lr=0.01, ep61~75 lr=0.001
+                if ep <= 40:
+                    lr = 0.1
+                elif ep <= 60:
+                    lr = 0.01
+                else:
+                    lr = 0.001
+                for pg in opt.param_groups:
+                    pg['lr'] = lr
                 _, a = train_ce_epoch(m, loader, opt, device)
-                print(f'[Sub][{ep}] {group_names[i]} acc={a*100:.2f}%')
+                print(f'[Sub][{ep}] {group_names[i]} acc={a*100:.2f}%, lr={lr}')
                 if ep % 10 == 0 or ep == args.epochs_sub:
                     acc_26 = eval_26class_acc(m, test_group_loaders[i], device)
                     acc_str = ', '.join([f'c{c}:{acc_26[c]:.1f}' for c in range(26)])
