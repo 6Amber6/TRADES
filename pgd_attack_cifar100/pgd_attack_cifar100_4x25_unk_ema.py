@@ -129,7 +129,7 @@ def pgd_whitebox(model, X, y, epsilon, num_steps, step_size, random_start=True):
         X_pgd = Variable(torch.max(torch.min(X.data + delta, high), low), requires_grad=True)
 
     err_pgd = (get_logits(model, X_pgd).argmax(1) != y).float().sum()
-    return err_nat, err_pgd
+    return err_nat, err_pgd, X_pgd.data
 
 
 def main():
@@ -166,15 +166,46 @@ def main():
 
     natural_err, robust_err = 0, 0
     total = 0
+    n_experts = len(group_fine)
+    correct_nat = [[0] * 26 for _ in range(n_experts)]
+    total_nat = [[0] * 26 for _ in range(n_experts)]
+    correct_adv = [[0] * 26 for _ in range(n_experts)]
+    total_adv = [[0] * 26 for _ in range(n_experts)]
+
     for x, y in loader:
         x, y = x.to(device), y.to(device)
-        en, er = pgd_whitebox(model, x, y, args.epsilon, args.num_steps, args.step_size, args.random)
+        en, er, x_pgd = pgd_whitebox(model, x, y, args.epsilon, args.num_steps, args.step_size, args.random)
         natural_err += en.item()
         robust_err += er.item()
         total += x.size(0)
 
+        with torch.no_grad():
+            gl_nat = model(x, return_aux=True)[0]
+            gl_adv = model(x_pgd, return_aux=True)[0]
+        y_np = y.cpu().numpy()
+        for ex in range(n_experts):
+            fine_ids = set(group_fine[ex])
+            map_t = {f: i for i, f in enumerate(group_fine[ex])}
+            for b in range(x.size(0)):
+                y_fine = int(y_np[b])
+                y_local = map_t[y_fine] if y_fine in fine_ids else 25
+                pred_nat = gl_nat[ex][b].argmax().item()
+                pred_adv = gl_adv[ex][b].argmax().item()
+                correct_nat[ex][y_local] += (pred_nat == y_local)
+                total_nat[ex][y_local] += 1
+                correct_adv[ex][y_local] += (pred_adv == y_local)
+                total_adv[ex][y_local] += 1
+
     print(f'Natural acc: {(total - natural_err) / total * 100:.2f}%')
     print(f'PGD-{args.num_steps} robust acc: {(total - robust_err) / total * 100:.2f}%')
+    print('--- 26-class accuracy (25 known + 1 unknown) per expert ---')
+    for ex in range(n_experts):
+        acc_nat = [correct_nat[ex][c] / total_nat[ex][c] * 100 if total_nat[ex][c] > 0 else 0.0 for c in range(26)]
+        acc_adv = [correct_adv[ex][c] / total_adv[ex][c] * 100 if total_adv[ex][c] > 0 else 0.0 for c in range(26)]
+        acc_nat_str = ', '.join([f'c{c}:{acc_nat[c]:.1f}' for c in range(26)])
+        acc_adv_str = ', '.join([f'c{c}:{acc_adv[c]:.1f}' for c in range(26)])
+        print(f'  {group_order[ex]} Natural: {acc_nat_str}')
+        print(f'  {group_order[ex]} PGD-{args.num_steps}: {acc_adv_str}')
 
 
 if __name__ == '__main__':
