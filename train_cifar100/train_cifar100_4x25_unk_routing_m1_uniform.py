@@ -1,5 +1,5 @@
 # CIFAR-100: 4 experts x 25 classes, each with unknown, routing by score_m1 = 1 - unknown_m
-# Variant: uniform known class sampling (500 per class) + unknown_weight=0.5 + 26-class acc every 10 ep
+# Variant: uniform known class sampling (500 per class) + aux_weight=0.10, unknown_weight=0.3 + 26-class acc every 10 ep
 
 from __future__ import print_function
 import os
@@ -139,7 +139,7 @@ class CIFARUnknownSubset(torch.utils.data.Dataset):
 
 # =========================================================
 # Uniform known class sampler: each known class 500 samples per epoch (uniform),
-# 1:1 known vs unknown per batch. Each batch: n_per_half known (evenly from 25 classes) + n_per_half unknown.
+# 2:1 known vs unknown per batch (known:unknown = 2:1).
 # =========================================================
 class UniformKnownClassSampler(torch.utils.data.Sampler):
     def __init__(self, subset, batch_size, shuffle=True):
@@ -148,17 +148,18 @@ class UniformKnownClassSampler(torch.utils.data.Sampler):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.n_known_classes = len(self.known_by_class)
-        n_per_half = batch_size // 2
+        self.n_unknown_per_batch = batch_size // 3
+        self.n_known_per_batch = batch_size - self.n_unknown_per_batch
         self.samples_per_known_class = 500
         self.n_known_total = self.n_known_classes * self.samples_per_known_class
-        self.n_unknown_total = self.n_known_total
-        self.n_batches = self.n_known_total // n_per_half
+        self.n_unknown_total = self.n_known_total // 2  # 2:1 ratio
+        self.n_batches = self.n_unknown_total // self.n_unknown_per_batch
         self.n_batches = max(1, self.n_batches)
-        self.n_per_half = n_per_half
 
     def __iter__(self):
         import random
-        n_per_half = self.n_per_half
+        n_known_per_batch = self.n_known_per_batch
+        n_unknown_per_batch = self.n_unknown_per_batch
         known_by_class = {k: list(v) for k, v in self.known_by_class.items()}
         if self.shuffle:
             for k in known_by_class:
@@ -168,11 +169,11 @@ class UniformKnownClassSampler(torch.utils.data.Sampler):
             random.shuffle(unknown)
         n_unknown = len(unknown)
 
-        n_high = n_per_half % self.n_known_classes
+        n_high = n_known_per_batch % self.n_known_classes
         if n_high == 0:
             n_high = self.n_known_classes
         n_low = self.n_known_classes - n_high
-        per_high = (n_per_half + self.n_known_classes - 1) // self.n_known_classes
+        per_high = (n_known_per_batch + self.n_known_classes - 1) // self.n_known_classes
         per_low = per_high - 1 if n_low > 0 else per_high
 
         class_order = list(range(self.n_known_classes))
@@ -187,8 +188,8 @@ class UniformKnownClassSampler(torch.utils.data.Sampler):
                 for i in range(n_take):
                     pos = (b * n_take + i) % len(arr)
                     batch.append(arr[pos])
-            for i in range(n_per_half):
-                batch.append(unknown[(b * n_per_half + i) % n_unknown])
+            for i in range(n_unknown_per_batch):
+                batch.append(unknown[(b * n_unknown_per_batch + i) % n_unknown])
             if self.shuffle:
                 random.shuffle(batch)
             yield batch
@@ -278,9 +279,9 @@ class UnknownRoutingFusion100(nn.Module):
 
 # =========================================================
 # Aux loss: positive (known) + negative (unknown) supervision
-# unknown_weight=0.5
+# aux_weight=0.10, unknown_weight=0.3
 # =========================================================
-def aux_ce_loss_unk(group_logits, y, group_defs, fine_to_coarse_t, weight=0.1, unknown_weight=0.5):
+def aux_ce_loss_unk(group_logits, y, group_defs, fine_to_coarse_t, weight=0.10, unknown_weight=0.3):
     loss = 0.0
     n_experts = len(group_logits)
     for i, (logits, g) in enumerate(zip(group_logits, group_defs)):
@@ -302,8 +303,8 @@ def aux_ce_loss_unk(group_logits, y, group_defs, fine_to_coarse_t, weight=0.1, u
 # =========================================================
 # Arguments
 # =========================================================
-parser = argparse.ArgumentParser(description='CIFAR-100 4x25+unk routing M1 (uniform, unk_weight=0.5) TRADES')
-parser.add_argument('--epochs-sub', type=int, default=120)
+parser = argparse.ArgumentParser(description='CIFAR-100 4x25+unk routing M1 (uniform, aux_weight=0.10, unk_weight=0.3) TRADES')
+parser.add_argument('--epochs-sub', type=int, default=80)
 parser.add_argument('--epochs-fusion', type=int, default=100)
 parser.add_argument('--batch-size', type=int, default=128)
 parser.add_argument('--lr', type=float, default=0.1)
@@ -315,8 +316,8 @@ parser.add_argument('--step-size', type=float, default=0.007)
 parser.add_argument('--beta', type=float, default=6.0)
 parser.add_argument('--sub-depth', type=int, default=28, choices=[28, 34])
 parser.add_argument('--sub-widen', type=int, default=8, choices=[4, 8, 10])
-parser.add_argument('--aux-weight', type=float, default=0.05)
-parser.add_argument('--aux-unknown-weight', type=float, default=0.5,
+parser.add_argument('--aux-weight', type=float, default=0.10)
+parser.add_argument('--aux-unknown-weight', type=float, default=0.3,
                     help='down-weight out-of-domain->Unknown loss')
 parser.add_argument('--route-T', type=float, default=1.0)
 parser.add_argument('--route-T-start', type=float, default=1.0)
@@ -501,7 +502,7 @@ def main():
         submodels.append(m)
 
     if not resume_loaded:
-        print('==== Stage 1 (4x25+unk pretrain, uniform known 500/class, 1:1 known/unknown) ====')
+        print('==== Stage 1 (4x25+unk pretrain, uniform known 500/class, 2:1 known/unknown) ====')
         for i, loader in enumerate(group_loaders):
             subset = loader.dataset
             kbc = subset.get_known_by_class()
@@ -509,18 +510,12 @@ def main():
             print(f'  {group_names[i]}: known={len(subset.known_indices)} (per_class={per_class[:5]}...), unknown={len(subset.unknown_indices)}')
             m = submodels[i]
             opt = optim.SGD(m.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+            sub_scheduler = MultiStepLR(opt, milestones=[40, 60], gamma=0.1)
             for ep in range(1, args.epochs_sub + 1):
-                # Stage 1 lr schedule: ep1~40 lr=0.1, ep41~60 lr=0.01, ep61~75 lr=0.001
-                if ep <= 40:
-                    lr = 0.1
-                elif ep <= 60:
-                    lr = 0.01
-                else:
-                    lr = 0.001
-                for pg in opt.param_groups:
-                    pg['lr'] = lr
                 _, a = train_ce_epoch(m, loader, opt, device)
-                print(f'[Sub][{ep}] {group_names[i]} acc={a*100:.2f}%, lr={lr}')
+                sub_scheduler.step()
+                current_lr = opt.param_groups[0]['lr']
+                print(f'[Sub][{ep}] {group_names[i]} acc={a*100:.2f}%, lr={current_lr}')
                 if ep % 10 == 0 or ep == args.epochs_sub:
                     acc_26 = eval_26class_acc(m, test_group_loaders[i], device)
                     acc_str = ', '.join([f'c{c}:{acc_26[c]:.1f}' for c in range(26)])
@@ -593,7 +588,7 @@ def main():
     print('[INFO] BN: freeze stats only (eval mode), gamma/beta remain trainable')
 
     if args.scheduler == 'step':
-        milestones = [int(args.epochs_fusion * 0.5), int(args.epochs_fusion * 0.75)]
+        milestones = [int(args.epochs_fusion * 0.4), int(args.epochs_fusion * 0.65)]
         scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
     elif args.scheduler == 'cosine':
         scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs_fusion)
