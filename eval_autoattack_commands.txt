@@ -1,0 +1,147 @@
+# =============================================================
+# AutoAttack Evaluation Commands  (RobustBench standard)
+# All scripts run from:  cd /Users/litong/workspace/TRADES
+# epsilon = 8/255,  version = standard,  norm = Linf
+# Install: pip install autoattack
+# =============================================================
+# NOTE: eval scripts wrap the model in NormalizedModel so that
+# AutoAttack operates in [0,1] and normalization is inside forward().
+# =============================================================
+
+
+# -------------------------------------------------------------
+# 1. ParallelFusionWRN
+#    Training script : train_cifar10/train_trades_cifar10_parallel_warmup_ema_aux_lrstage.py
+#    Eval script     : auto_attack/eval_autoattack_cifar10_parallel.py
+#    Log             : <model-dir>/log-aa-parallel.log  (auto)
+# -------------------------------------------------------------
+
+cd /Users/litong/workspace/TRADES
+
+# Evaluate final checkpoint (EMA weights baked in at last epoch)
+python auto_attack/eval_autoattack_cifar10_parallel.py \
+  --model-path ./train_cifar10/model-parallel/fusion-epoch100.pt \
+  --data-dir   ../data \
+  --epsilon    0.03137 \
+  --version    standard \
+  --batch-size 128
+
+# Evaluate a mid-training checkpoint (epoch 50)
+# python auto_attack/eval_autoattack_cifar10_parallel.py \
+#   --model-path ./train_cifar10/model-parallel/fusion-epoch50.pt \
+#   --data-dir   ../data
+
+# Evaluate from checkpoint-last.pt (contains 'model_state_dict' key)
+# python auto_attack/eval_autoattack_cifar10_parallel.py \
+#   --model-path ./train_cifar10/model-parallel/checkpoint-last.pt \
+#   --data-dir   ../data
+
+# Custom log path
+# python auto_attack/eval_autoattack_cifar10_parallel.py \
+#   --model-path ./train_cifar10/model-parallel/fusion-epoch100.pt \
+#   --data-dir   ../data \
+#   --log-path   ./results/parallel-aa.log
+
+
+# -------------------------------------------------------------
+# 2. GatedFusionWRN
+#    Training script : train_cifar10/train_trades_cifar10_parallel_warmup_ema_aux_lrstage_gated.py
+#    Eval script     : auto_attack/eval_autoattack_cifar10_gated.py
+#    Log             : <model-dir>/log-aa-gated.log  (auto)
+# -------------------------------------------------------------
+
+python auto_attack/eval_autoattack_cifar10_gated.py \
+  --model-path ./train_cifar10/model-parallel-gated/fusion-epoch100.pt \
+  --data-dir   ../data \
+  --epsilon    0.03137 \
+  --version    standard \
+  --batch-size 128
+
+# Mid-training checkpoint
+# python auto_attack/eval_autoattack_cifar10_gated.py \
+#   --model-path ./train_cifar10/model-parallel-gated/fusion-epoch50.pt \
+#   --data-dir   ../data
+
+# From checkpoint-last.pt
+# python auto_attack/eval_autoattack_cifar10_gated.py \
+#   --model-path ./train_cifar10/model-parallel-gated/checkpoint-last.pt \
+#   --data-dir   ../data
+
+
+# -------------------------------------------------------------
+# 3. SoftRoutingFusion  (asymmetric a/b routing)
+#    Training script : train_cifar10/train_trades_cifar10_softrouting.py
+#    Eval script     : auto_attack/eval_autoattack_cifar10_softrouting.py
+#    Log             : <model-dir>/log-aa-softrouting.log  (auto)
+#    IMPORTANT: --route-a/b/T/margin must match training values exactly.
+# -------------------------------------------------------------
+
+python auto_attack/eval_autoattack_cifar10_softrouting.py \
+  --model-path   ./train_cifar10/model-parallel-softrouting/fusion-epoch100.pt \
+  --data-dir     ../data \
+  --epsilon      0.03137 \
+  --version      standard \
+  --batch-size   128 \
+  --route-a      1.0 \
+  --route-b      0.5 \
+  --route-T      1.0 \
+  --route-margin 0.0
+
+# Ablation: equal weighting (a=b=1.0, trained with those values)
+# python auto_attack/eval_autoattack_cifar10_softrouting.py \
+#   --model-path   ./train_cifar10/model-parallel-softrouting-ab11/fusion-epoch100.pt \
+#   --data-dir     ../data \
+#   --route-a      1.0 \
+#   --route-b      1.0
+
+# From checkpoint-last.pt
+# python auto_attack/eval_autoattack_cifar10_softrouting.py \
+#   --model-path   ./train_cifar10/model-parallel-softrouting/checkpoint-last.pt \
+#   --data-dir     ../data \
+#   --route-a 1.0 --route-b 0.5 --route-T 1.0 --route-margin 0.0
+
+
+# -------------------------------------------------------------
+# 4. SoftRoutingFusion  (confidence-only routing)
+#    Training script : train_cifar10/train_trades_cifar10_softrouting_confidence.py
+#    Eval script     : auto_attack/eval_autoattack_cifar10_softrouting_confidence.py
+#    Log             : <model-dir>/log-aa-softrouting-conf.log  (auto)
+#    IMPORTANT: --route-T/margin must match training values exactly.
+# -------------------------------------------------------------
+
+python auto_attack/eval_autoattack_cifar10_softrouting_confidence.py \
+  --model-path   ./train_cifar10/model-parallel-softrouting-conf/fusion-epoch100.pt \
+  --data-dir     ../data \
+  --epsilon      0.03137 \
+  --version      standard \
+  --batch-size   128 \
+  --route-T      1.0 \
+  --route-margin 0.0
+
+# Ablation: sharper routing (T=0.5, must match training)
+# python auto_attack/eval_autoattack_cifar10_softrouting_confidence.py \
+#   --model-path   ./train_cifar10/model-parallel-softrouting-conf-T05/fusion-epoch100.pt \
+#   --data-dir     ../data \
+#   --route-T      0.5
+
+# From checkpoint-last.pt
+# python auto_attack/eval_autoattack_cifar10_softrouting_confidence.py \
+#   --model-path   ./train_cifar10/model-parallel-softrouting-conf/checkpoint-last.pt \
+#   --data-dir     ../data \
+#   --route-T 1.0 --route-margin 0.0
+
+
+# =============================================================
+# Quick reference: checkpoint file formats
+#
+#   fusion-epoch{N}.pt    => raw state_dict, use --model-path directly
+#   checkpoint-last.pt    => dict with keys:
+#                              model_state_dict  (fusion weights)
+#                              m4_state_dict
+#                              m6_state_dict
+#                              optimizer_state_dict
+#                              scheduler_state_dict
+#                              ema_shadow
+#                              stage2_epoch
+#                            eval scripts auto-detect and load model_state_dict
+# =============================================================
