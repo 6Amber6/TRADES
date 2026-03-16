@@ -173,8 +173,8 @@ def main():
         eval_test(model, device, test_loader)
         print('================================================================')
 
-        # save checkpoint
-        if epoch % args.save_freq == 0:
+        # save checkpoint: every 5 epochs starting from epoch 60, plus final epoch
+        if (epoch >= 60 and epoch % 5 == 0) or epoch == args.epochs:
             torch.save(model.state_dict(),
                        os.path.join(model_dir, 'model-wideres-epoch{}.pt'.format(epoch)))
             torch.save(optimizer.state_dict(),

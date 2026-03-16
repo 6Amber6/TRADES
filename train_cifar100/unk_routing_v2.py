@@ -284,7 +284,7 @@ def aux_ce_loss_unk(group_logits, y, group_defs, fine_to_coarse_t, weight=0.1, u
 # =========================================================
 parser = argparse.ArgumentParser(description='CIFAR-100 4x25+unk routing TRADES')
 parser.add_argument('--epochs-sub', type=int, default=80)
-parser.add_argument('--epochs-fusion', type=int, default=100)
+parser.add_argument('--epochs-fusion', type=int, default=130)
 parser.add_argument('--batch-size', type=int, default=128)
 parser.add_argument('--lr', type=float, default=0.1)
 parser.add_argument('--momentum', type=float, default=0.9)

@@ -15,8 +15,8 @@ parser.add_argument('--batch-size', type=int, default=128, metavar='N',
                     help='input batch size for training (default: 128)')
 parser.add_argument('--test-batch-size', type=int, default=128, metavar='N',
                     help='input batch size for testing (default: 128)')
-parser.add_argument('--epochs', type=int, default=200, metavar='N',
-                    help='number of epochs to train (default: 200)')
+parser.add_argument('--epochs', type=int, default=120, metavar='N',
+                    help='number of epochs to train (default: 120)')
 parser.add_argument('--weight-decay', '--wd', default=5e-4,
                     type=float, metavar='W')
 parser.add_argument('--lr', type=float, default=0.1, metavar='LR',
@@ -158,7 +158,8 @@ def main():
         eval_test(model, device, test_loader)
         print('================================================================')
 
-        if epoch % args.save_freq == 0:
+        # save checkpoint: every 10 epochs starting from epoch 60, plus final epoch
+        if (epoch >= 60 and epoch % 10 == 0) or epoch == args.epochs:
             torch.save(model.state_dict(),
                        os.path.join(model_dir, 'model-wideres-epoch{}.pt'.format(epoch)))
             torch.save(optimizer.state_dict(),
