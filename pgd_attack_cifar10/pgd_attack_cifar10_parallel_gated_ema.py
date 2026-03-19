@@ -1,4 +1,8 @@
 from __future__ import print_function
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import argparse
 import torch
 import torch.nn as nn
@@ -62,6 +66,8 @@ parser.set_defaults(random=True)
 parser.add_argument('--model-path', required=True)
 parser.add_argument('--wrn4-path', required=True)
 parser.add_argument('--wrn6-path', required=True)
+parser.add_argument('--sub-depth', type=int, default=34, help='WRN depth (34=WRN-34-10, 16=WRN-16-8)')
+parser.add_argument('--sub-widen', type=int, default=10, help='WRN widen factor (10=WRN-34-10, 8=WRN-16-8)')
 
 parser.add_argument('--ema', action='store_true',
                     help='evaluate using EMA weights (checkpoint should already contain EMA weights)')
@@ -170,13 +176,14 @@ def eval_adv_test_whitebox(model, loader):
 # Main
 # =========================================================
 def main():
-    m4 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=4).to(device)
-    m6 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=6).to(device)
+    emb_dim = 64 * args.sub_widen
+    m4 = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=4).to(device)
+    m6 = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=6).to(device)
 
     m4.load_state_dict(torch.load(args.wrn4_path, map_location=device))
     m6.load_state_dict(torch.load(args.wrn6_path, map_location=device))
 
-    model = GatedFusionWRN(m4, m6).to(device)
+    model = GatedFusionWRN(m4, m6, emb_dim=emb_dim).to(device)
     model.load_state_dict(torch.load(args.model_path, map_location=device))
 
     if args.ema:

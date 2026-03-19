@@ -179,6 +179,8 @@ parser.add_argument('--num-steps', type=int, default=10)
 parser.add_argument('--step-size', type=float, default=0.007)
 parser.add_argument('--beta', type=float, default=6.0)
 parser.add_argument('--model-dir', default='./model-parallel-gated')
+parser.add_argument('--sub-depth', type=int, default=34, help='WRN depth (34=WRN-34-10, 16=WRN-16-8)')
+parser.add_argument('--sub-widen', type=int, default=10, help='WRN widen factor (10=WRN-34-10, 8=WRN-16-8)')
 parser.add_argument('--resume', default='auto',
                     help='checkpoint path or "auto" to resume from model-dir/checkpoint-last.pt')
 args = parser.parse_args()
@@ -290,8 +292,8 @@ def main():
                 start_epoch = stage2_epoch - 10 + 1
 
     # ================= Stage 1 =================
-    m4 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=4).to(device)
-    m6 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=6).to(device)
+    m4 = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=4).to(device)
+    m6 = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=6).to(device)
 
     if resume_loaded and checkpoint is not None:
         m4.load_state_dict(checkpoint['m4_state_dict'])
@@ -313,7 +315,8 @@ def main():
         torch.save(m6.state_dict(), f'{args.model_dir}/wrn6_final.pt')
 
     # ================= Stage 2 =================
-    fusion = GatedFusionWRN(m4, m6).to(device)
+    emb_dim = 64 * args.sub_widen
+    fusion = GatedFusionWRN(m4, m6, emb_dim=emb_dim).to(device)
 
     for p in fusion.m4.parameters():
         p.requires_grad = True

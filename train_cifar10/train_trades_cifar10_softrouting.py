@@ -222,6 +222,8 @@ parser.add_argument('--num-steps', type=int, default=10)
 parser.add_argument('--step-size', type=float, default=0.007)
 parser.add_argument('--beta', type=float, default=6.0)
 parser.add_argument('--model-dir', default='./model-parallel')
+parser.add_argument('--sub-depth', type=int, default=34, help='WRN depth (34=WRN-34-10, 16=WRN-16-8)')
+parser.add_argument('--sub-widen', type=int, default=10, help='WRN widen factor (10=WRN-34-10, 8=WRN-16-8)')
 parser.add_argument('--route-a', type=float, default=1.0)
 parser.add_argument('--route-b', type=float, default=0.5)
 parser.add_argument('--route-T', type=float, default=1.0)
@@ -343,8 +345,8 @@ def main():
                 start_epoch = stage2_epoch - 10 + 1
 
     # ================= Stage 1 =================
-    m4 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=5).to(device)
-    m6 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=7).to(device)
+    m4 = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=5).to(device)
+    m6 = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=7).to(device)
 
     if resume_loaded and checkpoint is not None:
         m4.load_state_dict(checkpoint['m4_state_dict'])

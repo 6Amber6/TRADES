@@ -107,6 +107,10 @@ def main():
     parser.add_argument('--epsilon',       type=float, default=8/255)
     parser.add_argument('--version',       default='standard',
                         choices=['standard', 'plus', 'rand'])
+    parser.add_argument('--sub-depth',     type=int,   default=34,
+                        help='WRN depth (34=WRN-34-10, 16=WRN-16-8)')
+    parser.add_argument('--sub-widen',     type=int,   default=10,
+                        help='WRN widen factor (10=WRN-34-10, 8=WRN-16-8)')
     parser.add_argument('--seed',          type=int,   default=42)
     parser.add_argument('--no-cuda',       action='store_true')
     parser.add_argument('--log-path',      default=None)
@@ -135,8 +139,8 @@ def main():
 
     # ---- model ----
     # num_classes=5 (4 vehicle + unknown) and 7 (6 animal + unknown)
-    m4 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=5).to(device)
-    m6 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=7).to(device)
+    m4 = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=5).to(device)
+    m6 = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=7).to(device)
     fusion = SoftRoutingFusion(
         m4, m6,
         a=args.route_a, b=args.route_b,

@@ -78,6 +78,10 @@ def main():
                         help='Linf epsilon (default: 8/255)')
     parser.add_argument('--version',    default='standard',
                         choices=['standard', 'plus', 'rand'])
+    parser.add_argument('--sub-depth',  type=int,   default=34,
+                        help='WRN depth (34=WRN-34-10, 16=WRN-16-8)')
+    parser.add_argument('--sub-widen',  type=int,   default=10,
+                        help='WRN widen factor (10=WRN-34-10, 8=WRN-16-8)')
     parser.add_argument('--seed',       type=int,   default=42)
     parser.add_argument('--no-cuda',    action='store_true')
     parser.add_argument('--log-path',   default=None)
@@ -100,9 +104,10 @@ def main():
     y_test = torch.cat([y for _, y in test_loader], dim=0).to(device)
 
     # ---- model ----
-    m4 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=4).to(device)
-    m6 = WRNWithEmbedding(depth=34, widen_factor=10, num_classes=6).to(device)
-    fusion = GatedFusionWRN(m4, m6).to(device)
+    emb_dim = 64 * args.sub_widen
+    m4 = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=4).to(device)
+    m6 = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=6).to(device)
+    fusion = GatedFusionWRN(m4, m6, emb_dim=emb_dim).to(device)
 
     ckpt = torch.load(args.model_path, map_location=device)
     if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
