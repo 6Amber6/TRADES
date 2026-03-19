@@ -96,8 +96,10 @@ parser.add_argument('--no-random', dest='random', action='store_false')
 parser.set_defaults(random=True)
 
 parser.add_argument('--model-path', required=True)
-parser.add_argument('--sub-depth', type=int, default=34, help='WRN depth (34=WRN-34-10, 16=WRN-16-8)')
-parser.add_argument('--sub-widen', type=int, default=10, help='WRN widen factor (10=WRN-34-10, 8=WRN-16-8)')
+parser.add_argument('--sub-depth', type=int, default=34, help='WRN depth')
+parser.add_argument('--sub-widen', type=int, default=10, help='WRN widen factor')
+parser.add_argument('--arch', default=None, choices=['wrn34-10', 'wrn16-8', 'wrn22-8'],
+                    help='Architecture preset (overrides --sub-depth/--sub-widen)')
 parser.add_argument('--route-a', type=float, default=1.0)
 parser.add_argument('--route-b', type=float, default=0.5)
 parser.add_argument('--route-T', type=float, default=1.0)
@@ -107,6 +109,10 @@ parser.add_argument('--ema', action='store_true',
                     help='evaluate using EMA weights (checkpoint should already contain EMA)')
 
 args = parser.parse_args()
+
+ARCH_PRESETS = {'wrn34-10': (34, 10), 'wrn16-8': (16, 8), 'wrn22-8': (22, 8)}
+if args.arch:
+    args.sub_depth, args.sub_widen = ARCH_PRESETS[args.arch]
 
 use_cuda = (not args.no_cuda) and torch.cuda.is_available()
 device = torch.device("cuda" if use_cuda else "cpu")

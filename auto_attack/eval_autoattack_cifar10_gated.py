@@ -79,13 +79,20 @@ def main():
     parser.add_argument('--version',    default='standard',
                         choices=['standard', 'plus', 'rand'])
     parser.add_argument('--sub-depth',  type=int,   default=34,
-                        help='WRN depth (34=WRN-34-10, 16=WRN-16-8)')
+                        help='WRN depth')
     parser.add_argument('--sub-widen',  type=int,   default=10,
-                        help='WRN widen factor (10=WRN-34-10, 8=WRN-16-8)')
+                        help='WRN widen factor')
+    parser.add_argument('--arch',       default=None,
+                        choices=['wrn34-10', 'wrn16-8', 'wrn22-8'],
+                        help='Architecture preset (overrides --sub-depth/--sub-widen)')
     parser.add_argument('--seed',       type=int,   default=42)
     parser.add_argument('--no-cuda',    action='store_true')
     parser.add_argument('--log-path',   default=None)
     args = parser.parse_args()
+
+    ARCH_PRESETS = {'wrn34-10': (34, 10), 'wrn16-8': (16, 8), 'wrn22-8': (22, 8)}
+    if args.arch:
+        args.sub_depth, args.sub_widen = ARCH_PRESETS[args.arch]
 
     device = torch.device(
         'cuda' if (not args.no_cuda and torch.cuda.is_available()) else 'cpu')

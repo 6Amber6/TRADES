@@ -1,7 +1,6 @@
 # =============================================================
-# CIFAR-10 4+6 Parallel Models Training & Evaluation Commands
+# CIFAR-10 4+6 Parallel Models WRN-22-8 Training & Evaluation Commands
 # Three methods: Gated, SoftRouting (a/b), SoftRouting Confidence
-# Architectures: wrn34-10, wrn16-8, wrn22-8 (use --arch)
 # Run from: cd /path/to/TRADES (project root)
 # =============================================================
 
@@ -22,35 +21,27 @@ python train_cifar10/train_trades_cifar10_parallel_warmup_ema_aux_lrstage_gated.
   --num-steps 10 \
   --step-size 0.007 \
   --beta 6.0 \
-  --arch wrn16-8 \
-  --model-dir ./model-cifar10-gated-wrn16-8
+  --arch wrn22-8 \
+  --model-dir ./model-cifar10-gated-wrn22-8
 
 # ---- AutoAttack Evaluation ----
 python auto_attack/eval_autoattack_cifar10_gated.py \
-  --model-path ./model-cifar10-gated-wrn16-8/fusion-epoch100.pt \
+  --model-path ./model-cifar10-gated-wrn22-8/fusion-epoch100.pt \
   --data-dir ../data \
   --epsilon 0.03137 \
   --version standard \
   --batch-size 128 \
-  --arch wrn16-8
+  --arch wrn22-8
 
 # ---- PGD-20 Evaluation ----
 python pgd_attack_cifar10/pgd_attack_cifar10_parallel_gated_ema.py \
-  --model-path ./model-cifar10-gated-wrn16-8/fusion-epoch100.pt \
-  --wrn4-path ./model-cifar10-gated-wrn16-8/wrn4_final.pt \
-  --wrn6-path ./model-cifar10-gated-wrn16-8/wrn6_final.pt \
+  --model-path ./model-cifar10-gated-wrn22-8/fusion-epoch100.pt \
+  --wrn4-path ./model-cifar10-gated-wrn22-8/wrn4_final.pt \
+  --wrn6-path ./model-cifar10-gated-wrn22-8/wrn6_final.pt \
   --epsilon 0.031 \
   --num-steps 20 \
   --step-size 0.003 \
-  --arch wrn16-8
-
-
-# =============================================================
-# WRN-22-8 variant (replace --arch wrn16-8 with --arch wrn22-8,
-# and model-dir with *-wrn22-8)
-# =============================================================
-# Example for Gated:
-#   --arch wrn22-8 --model-dir ./model-cifar10-gated-wrn22-8
+  --arch wrn22-8
 
 
 # =============================================================
@@ -69,8 +60,8 @@ python train_cifar10/train_trades_cifar10_softrouting.py \
   --num-steps 10 \
   --step-size 0.007 \
   --beta 6.0 \
-  --arch wrn16-8 \
-  --model-dir ./model-cifar10-softrouting-wrn16-8 \
+  --arch wrn22-8 \
+  --model-dir ./model-cifar10-softrouting-wrn22-8 \
   --route-a 1.0 \
   --route-b 0.5 \
   --route-T 1.0 \
@@ -78,12 +69,12 @@ python train_cifar10/train_trades_cifar10_softrouting.py \
 
 # ---- AutoAttack Evaluation ----
 python auto_attack/eval_autoattack_cifar10_softrouting.py \
-  --model-path ./model-cifar10-softrouting-wrn16-8/fusion-epoch100.pt \
+  --model-path ./model-cifar10-softrouting-wrn22-8/fusion-epoch100.pt \
   --data-dir ../data \
   --epsilon 0.03137 \
   --version standard \
   --batch-size 128 \
-  --arch wrn16-8 \
+  --arch wrn22-8 \
   --route-a 1.0 \
   --route-b 0.5 \
   --route-T 1.0 \
@@ -91,11 +82,11 @@ python auto_attack/eval_autoattack_cifar10_softrouting.py \
 
 # ---- PGD-20 Evaluation ----
 python pgd_attack_cifar10/pgd_attack_cifar10_softrouting_ema.py \
-  --model-path ./model-cifar10-softrouting-wrn16-8/fusion-epoch100.pt \
+  --model-path ./model-cifar10-softrouting-wrn22-8/fusion-epoch100.pt \
   --epsilon 0.031 \
   --num-steps 20 \
   --step-size 0.003 \
-  --arch wrn16-8 \
+  --arch wrn22-8 \
   --route-a 1.0 \
   --route-b 0.5 \
   --route-T 1.0 \
@@ -118,29 +109,29 @@ python train_cifar10/train_trades_cifar10_softrouting_confidence.py \
   --num-steps 10 \
   --step-size 0.007 \
   --beta 6.0 \
-  --arch wrn16-8 \
-  --model-dir ./model-cifar10-softrouting-conf-wrn16-8 \
+  --arch wrn22-8 \
+  --model-dir ./model-cifar10-softrouting-conf-wrn22-8 \
   --route-T 1.0 \
   --route-margin 0.0
 
 # ---- AutoAttack Evaluation ----
 python auto_attack/eval_autoattack_cifar10_softrouting_confidence.py \
-  --model-path ./model-cifar10-softrouting-conf-wrn16-8/fusion-epoch100.pt \
+  --model-path ./model-cifar10-softrouting-conf-wrn22-8/fusion-epoch100.pt \
   --data-dir ../data \
   --epsilon 0.03137 \
   --version standard \
   --batch-size 128 \
-  --arch wrn16-8 \
+  --arch wrn22-8 \
   --route-T 1.0 \
   --route-margin 0.0
 
 # ---- PGD-20 Evaluation ----
 python pgd_attack_cifar10/pgd_attack_cifar10_softrouting_confidence_ema.py \
-  --model-path ./model-cifar10-softrouting-conf-wrn16-8/fusion-epoch100.pt \
+  --model-path ./model-cifar10-softrouting-conf-wrn22-8/fusion-epoch100.pt \
   --epsilon 0.031 \
   --num-steps 20 \
   --step-size 0.003 \
-  --arch wrn16-8 \
+  --arch wrn22-8 \
   --route-T 1.0 \
   --route-margin 0.0
 
@@ -148,14 +139,8 @@ python pgd_attack_cifar10/pgd_attack_cifar10_softrouting_confidence_ema.py \
 # =============================================================
 # Parameter Notes
 # =============================================================
-# Use --arch for preset, or --sub-depth/--sub-widen for custom:
-#   --arch wrn34-10  => depth=34, widen=10 (default)
-#   --arch wrn16-8   => depth=16, widen=8
-#   --arch wrn22-8   => depth=22, widen=8
+# WRN-22-8: depth=22, widen_factor=8
 #
 # AutoAttack: pip install autoattack
 # epsilon: 0.03137 = 8/255 (common for AutoAttack)
 # epsilon: 0.031 (PGD, matches training)
-#
-# PGD-20 compatibility: Yes. All three PGD scripts support
-# --arch wrn16-8 / wrn22-8 or --sub-depth/--sub-widen.

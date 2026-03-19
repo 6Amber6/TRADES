@@ -222,8 +222,10 @@ parser.add_argument('--num-steps', type=int, default=10)
 parser.add_argument('--step-size', type=float, default=0.007)
 parser.add_argument('--beta', type=float, default=6.0)
 parser.add_argument('--model-dir', default='./model-parallel')
-parser.add_argument('--sub-depth', type=int, default=34, help='WRN depth (34=WRN-34-10, 16=WRN-16-8)')
-parser.add_argument('--sub-widen', type=int, default=10, help='WRN widen factor (10=WRN-34-10, 8=WRN-16-8)')
+parser.add_argument('--sub-depth', type=int, default=34, help='WRN depth')
+parser.add_argument('--sub-widen', type=int, default=10, help='WRN widen factor')
+parser.add_argument('--arch', default=None, choices=['wrn34-10', 'wrn16-8', 'wrn22-8'],
+                    help='Architecture preset (overrides --sub-depth/--sub-widen if set)')
 parser.add_argument('--route-a', type=float, default=1.0)
 parser.add_argument('--route-b', type=float, default=0.5)
 parser.add_argument('--route-T', type=float, default=1.0)
@@ -231,6 +233,11 @@ parser.add_argument('--route-margin', type=float, default=0.0)
 parser.add_argument('--resume', default='auto',
                     help='checkpoint path or "auto" to resume from model-dir/checkpoint-last.pt')
 args = parser.parse_args()
+
+# Resolve arch preset
+ARCH_PRESETS = {'wrn34-10': (34, 10), 'wrn16-8': (16, 8), 'wrn22-8': (22, 8)}
+if args.arch:
+    args.sub_depth, args.sub_widen = ARCH_PRESETS[args.arch]
 
 
 # =========================================================
