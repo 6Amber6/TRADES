@@ -517,7 +517,7 @@ def main():
         }
         torch.save(ckpt, os.path.join(args.model_dir, 'checkpoint-last.pt'))
 
-        if ep % 5 == 0 or ep == args.epochs_fusion:
+        if ep >= 60 and (ep % 5 == 0 or ep == args.epochs_fusion):
             if ep == args.epochs_fusion:
                 with torch.no_grad():
                     for n, p in fusion.named_parameters():
