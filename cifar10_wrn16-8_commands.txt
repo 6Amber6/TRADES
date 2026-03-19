@@ -12,7 +12,7 @@
 
 # ---- Training ----
 python train_cifar10/train_trades_cifar10_parallel_warmup_ema_aux_lrstage_gated.py \
-  --epochs-sub 40 \
+  --epochs-sub 35 \
   --epochs-fusion 100 \
   --batch-size 128 \
   --lr 0.1 \
@@ -59,7 +59,7 @@ python pgd_attack_cifar10/pgd_attack_cifar10_parallel_gated_ema.py \
 
 # ---- Training ----
 python train_cifar10/train_trades_cifar10_softrouting.py \
-  --epochs-sub 40 \
+  --epochs-sub 35 \
   --epochs-fusion 100 \
   --batch-size 128 \
   --lr 0.1 \
@@ -108,7 +108,7 @@ python pgd_attack_cifar10/pgd_attack_cifar10_softrouting_ema.py \
 
 # ---- Training ----
 python train_cifar10/train_trades_cifar10_softrouting_confidence.py \
-  --epochs-sub 40 \
+  --epochs-sub 35 \
   --epochs-fusion 100 \
   --batch-size 128 \
   --lr 0.1 \
