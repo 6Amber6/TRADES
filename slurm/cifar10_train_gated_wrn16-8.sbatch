@@ -1,16 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=c10-gated-16
-#SBATCH --partition=gpu
+#SBATCH --partition=DGXA100
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
+#SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=128G
 #SBATCH --time=24:00:00
-#SBATCH --output=logs/cifar10_gated_wrn16-8_%j.out
-#SBATCH --error=logs/cifar10_gated_wrn16-8_%j.err
-#SBATCH --account=YOUR_ACCOUNT
-
-# Modify --partition and --account for your cluster
+#SBATCH --output=logs/%x-%j.out
+#SBATCH --error=logs/%x-%j.err
 
 cd ${SLURM_SUBMIT_DIR:-$HOME/TRADES}
 mkdir -p logs
