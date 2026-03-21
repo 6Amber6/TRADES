@@ -51,8 +51,16 @@ parser.add_argument('--model-dir', default='./model-cifar-wideResNet',
                     help='directory of model for saving checkpoint')
 parser.add_argument('--save-freq', '-s', default=1, type=int, metavar='N',
                     help='save frequency')
+parser.add_argument('--depth', type=int, default=34, help='WRN depth')
+parser.add_argument('--widen-factor', type=int, default=10, help='WRN widen factor')
+parser.add_argument('--arch', default=None, choices=['wrn34-10', 'wrn28-10', 'wrn28-8', 'wrn22-8', 'wrn22-10', 'wrn16-8'],
+                    help='Architecture preset (overrides --depth/--widen-factor if set)')
 
 args = parser.parse_args()
+
+ARCH_PRESETS = {'wrn34-10': (34, 10), 'wrn28-10': (28, 10), 'wrn28-8': (28, 8), 'wrn22-8': (22, 8), 'wrn22-10': (22, 10), 'wrn16-8': (16, 8)}
+if args.arch:
+    args.depth, args.widen_factor = ARCH_PRESETS[args.arch]
 
 # settings
 model_dir = args.model_dir
@@ -157,7 +165,7 @@ def adjust_learning_rate(optimizer, epoch):
 
 def main():
     # init model, ResNet18() can be also used here for training
-    model = WideResNet().to(device)
+    model = WideResNet(depth=args.depth, widen_factor=args.widen_factor).to(device)
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
     for epoch in range(1, args.epochs + 1):
