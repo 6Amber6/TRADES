@@ -12,6 +12,7 @@
 
 cd ${SLURM_SUBMIT_DIR:-$HOME/TRADES}
 mkdir -p logs
+export PYTHONPATH="$PWD:$PYTHONPATH"
 
 python train_cifar10/train_trades_cifar10.py \
   --epochs 100 \
