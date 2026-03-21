@@ -213,6 +213,8 @@ parser.add_argument('--epochs-sub', type=int, default=100)
 parser.add_argument('--epochs-fusion', type=int, default=100)
 parser.add_argument('--batch-size', type=int, default=128)
 parser.add_argument('--lr', type=float, default=0.1)
+parser.add_argument('--fusion-lr', type=float, default=None,
+                    help='Stage 2 base lr (default: same as --lr)')
 parser.add_argument('--momentum', type=float, default=0.9)
 parser.add_argument('--weight-decay', type=float, default=5e-4)
 parser.add_argument('--epsilon', type=float, default=0.031)
@@ -234,6 +236,8 @@ args = parser.parse_args()
 ARCH_PRESETS = {'wrn34-10': (34, 10), 'wrn16-8': (16, 8), 'wrn22-8': (22, 8)}
 if args.arch:
     args.sub_depth, args.sub_widen = ARCH_PRESETS[args.arch]
+
+fusion_lr = args.fusion_lr if args.fusion_lr is not None else args.lr
 
 
 # =========================================================
@@ -335,8 +339,13 @@ def main():
     warmup_start = 1
     checkpoint = None
     if resume_path and os.path.isfile(resume_path):
-        checkpoint = torch.load(resume_path, map_location=device)
-        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        try:
+            checkpoint = torch.load(resume_path, map_location=device)
+        except Exception as e:
+            print(f'[WARN] Failed to load checkpoint (corrupted?): {e}')
+            print('[WARN] Starting from scratch.')
+            checkpoint = None
+        if checkpoint is not None and isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             print(f'[INFO] Resuming from {resume_path}')
             resume_loaded = True
             stage2_epoch = checkpoint.get('stage2_epoch', 0)
@@ -379,8 +388,8 @@ def main():
         p.requires_grad = True
 
     params = [
-        {'params': fusion.m4.parameters(), 'lr': args.lr},
-        {'params': fusion.m6.parameters(), 'lr': args.lr},
+        {'params': fusion.m4.parameters(), 'lr': fusion_lr},
+        {'params': fusion.m6.parameters(), 'lr': fusion_lr},
     ]
 
     optimizer = optim.SGD(
