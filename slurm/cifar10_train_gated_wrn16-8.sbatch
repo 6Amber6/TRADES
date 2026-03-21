@@ -26,4 +26,5 @@ python train_cifar10/train_trades_cifar10_parallel_warmup_ema_aux_lrstage_gated.
   --step-size 0.007 \
   --beta 6.0 \
   --arch wrn16-8 \
-  --model-dir ./model-cifar10-gated-wrn16-8
+  --model-dir ./model-cifar10-gated-wrn16-8 \
+  --resume ""

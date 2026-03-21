@@ -30,4 +30,5 @@ python train_cifar10/train_trades_cifar10_softrouting.py \
   --route-a 1.0 \
   --route-b 0.5 \
   --route-T 1.0 \
-  --route-margin 0.0
+  --route-margin 0.0 \
+  --resume ""

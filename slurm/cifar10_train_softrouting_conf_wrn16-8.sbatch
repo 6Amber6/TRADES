@@ -28,4 +28,5 @@ python train_cifar10/train_trades_cifar10_softrouting_confidence.py \
   --arch wrn16-8 \
   --model-dir ./model-cifar10-softrouting-conf-wrn16-8 \
   --route-T 1.0 \
-  --route-margin 0.0
+  --route-margin 0.0 \
+  --resume ""
