@@ -18,13 +18,13 @@ python train_cifar10/train_trades_cifar10_softrouting.py \
   --epochs-fusion 100 \
   --batch-size 128 \
   --lr 0.1 \
-  --fusion-lr 0.03 \
+  --fusion-lr 0.1 \
   --momentum 0.9 \
   --weight-decay 5e-4 \
   --epsilon 0.031 \
   --num-steps 10 \
   --step-size 0.007 \
-  --beta 6.0 \
+  --beta 8.0 \
   --arch wrn16-8 \
   --model-dir ./model-cifar10-softrouting-wrn16-8 \
   --route-a 1.0 \
