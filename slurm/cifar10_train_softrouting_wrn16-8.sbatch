@@ -18,6 +18,7 @@ python train_cifar10/train_trades_cifar10_softrouting.py \
   --epochs-fusion 100 \
   --batch-size 128 \
   --lr 0.1 \
+  --fusion-lr 0.03 \
   --momentum 0.9 \
   --weight-decay 5e-4 \
   --epsilon 0.031 \
