@@ -40,8 +40,18 @@ parser.add_argument('--target-model-path',
                     help='target model for black-box attack evaluation')
 parser.add_argument('--white-box-attack', default=True,
                     help='whether perform white-box attack')
+parser.add_argument('--depth', type=int, default=34, help='WRN depth')
+parser.add_argument('--widen-factor', type=int, default=10, help='WRN widen factor')
+parser.add_argument('--arch', default=None,
+                    choices=['wrn34-10', 'wrn28-10', 'wrn28-8', 'wrn22-10', 'wrn22-8', 'wrn16-8'],
+                    help='Architecture preset (overrides --depth/--widen-factor if set)')
 
 args = parser.parse_args()
+
+ARCH_PRESETS = {'wrn34-10': (34, 10), 'wrn28-10': (28, 10), 'wrn28-8': (28, 8),
+                'wrn22-10': (22, 10), 'wrn22-8': (22, 8), 'wrn16-8': (16, 8)}
+if args.arch:
+    args.depth, args.widen_factor = ARCH_PRESETS[args.arch]
 
 # settings
 use_cuda = not args.no_cuda and torch.cuda.is_available()
@@ -159,16 +169,16 @@ def main():
     if args.white_box_attack:
         # white-box attack
         print('pgd white-box attack')
-        model = WideResNet().to(device)
+        model = WideResNet(depth=args.depth, widen_factor=args.widen_factor).to(device)
         model.load_state_dict(torch.load(args.model_path))
 
         eval_adv_test_whitebox(model, device, test_loader)
     else:
         # black-box attack
         print('pgd black-box attack')
-        model_target = WideResNet().to(device)
+        model_target = WideResNet(depth=args.depth, widen_factor=args.widen_factor).to(device)
         model_target.load_state_dict(torch.load(args.target_model_path))
-        model_source = WideResNet().to(device)
+        model_source = WideResNet(depth=args.depth, widen_factor=args.widen_factor).to(device)
         model_source.load_state_dict(torch.load(args.source_model_path))
 
         eval_adv_test_blackbox(model_target, model_source, device, test_loader)

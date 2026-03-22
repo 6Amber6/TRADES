@@ -12,8 +12,9 @@
 
 cd ${SLURM_SUBMIT_DIR:-$HOME/TRADES}
 mkdir -p logs
+export PYTHONUNBUFFERED=1
 
-python train_cifar10/train_trades_cifar10_softrouting_confidence.py \
+stdbuf -oL python -u train_cifar10/train_trades_cifar10_softrouting_confidence.py \
   --epochs-sub 35 \
   --epochs-fusion 100 \
   --batch-size 128 \
