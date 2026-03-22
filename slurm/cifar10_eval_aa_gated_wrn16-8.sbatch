@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=c10-aa-softc-16
+#SBATCH --job-name=c10-aa-gated-16
 #SBATCH --partition=DGXA100
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -15,12 +15,10 @@ mkdir -p logs
 export PYTHONPATH="$PWD:$PYTHONPATH"
 export PYTHONUNBUFFERED=1
 
-stdbuf -oL python -u auto_attack/eval_autoattack_cifar10_softrouting_confidence.py \
-  --model-path ./model-cifar10-softrouting-conf-wrn16-8/fusion-epoch95.pt \
+stdbuf -oL python -u auto_attack/eval_autoattack_cifar10_gated.py \
+  --model-path ./model-cifar10-gated-wrn16-8/fusion-epoch95.pt \
   --data-dir ../data \
   --epsilon 0.03137 \
   --version standard \
   --batch-size 128 \
-  --arch wrn16-8 \
-  --route-T 1.0 \
-  --route-margin 0.0
+  --arch wrn16-8
