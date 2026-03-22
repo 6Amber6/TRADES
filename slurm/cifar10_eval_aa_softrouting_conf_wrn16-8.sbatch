@@ -16,7 +16,7 @@ export PYTHONPATH="$PWD:$PYTHONPATH"
 export PYTHONUNBUFFERED=1
 
 stdbuf -oL python -u auto_attack/eval_autoattack_cifar10_softrouting_confidence.py \
-  --model-path ./model-cifar10-softrouting-conf-wrn16-8/fusion-epoch100.pt \
+  --model-path ./model-cifar10-softrouting-conf-wrn16-8/fusion-epoch90.pt \
   --data-dir ../data \
   --epsilon 0.03137 \
   --version standard \
