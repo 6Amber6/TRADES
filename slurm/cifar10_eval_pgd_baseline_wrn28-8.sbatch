@@ -16,7 +16,7 @@ export PYTHONPATH="$PWD:$PYTHONPATH"
 export PYTHONUNBUFFERED=1
 
 stdbuf -oL python -u pgd_attack_cifar10/pgd_attack_cifar10.py \
-  --model-path ./model-cifar10-baseline-wrn28-8/model-wideres-epoch100.pt \
+  --model-path ./model-cifar10-baseline-wrn28-8/model-wideres-epoch75.pt \
   --epsilon 0.031 \
   --num-steps 20 \
   --step-size 0.003 \
