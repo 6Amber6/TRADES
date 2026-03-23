@@ -16,7 +16,7 @@ export PYTHONPATH="$PWD:$PYTHONPATH"
 export PYTHONUNBUFFERED=1
 
 stdbuf -oL python -u train_cifar100/train_trades_cifar100_gated_3stage_2group.py \
-  --epochs-sub 100 \
+  --epochs-sub 80 \
   --epochs-router 15 \
   --epochs-fusion 100 \
   --batch-size 128 \
