@@ -431,6 +431,12 @@ def main():
         opt_man = optim.SGD(m_manmade.parameters(), lr=args.lr,
                             momentum=args.momentum, weight_decay=args.weight_decay)
 
+        # LR decay for Stage 1: milestones at 50 and 65
+        sub_milestones = [int(args.epochs_sub * 0.625), int(args.epochs_sub * 0.8125)]
+        sched_nat = MultiStepLR(opt_nat, milestones=sub_milestones, gamma=0.1)
+        sched_man = MultiStepLR(opt_man, milestones=sub_milestones, gamma=0.1)
+        print(f'[Stage1] LR milestones: {sub_milestones}')
+
         for ep in range(1, args.epochs_sub + 1):
             l_nat, a_nat = train_ce_epoch(m_nature, train_loader_nature, opt_nat, device)
             l_man, a_man = train_ce_epoch(m_manmade, train_loader_manmade, opt_man, device)
@@ -452,7 +458,10 @@ def main():
             ta_nat = t_nat_correct / t_nat_total
             ta_man = t_man_correct / t_man_total
 
-            print(f'[Stage1][{ep}/{args.epochs_sub}] nature train={a_nat*100:.2f}% test={ta_nat*100:.2f}% | manmade train={a_man*100:.2f}% test={ta_man*100:.2f}%')
+            print(f'[Stage1][{ep}/{args.epochs_sub}] nature train={a_nat*100:.2f}% test={ta_nat*100:.2f}% | manmade train={a_man*100:.2f}% test={ta_man*100:.2f}% | lr={opt_nat.param_groups[0]["lr"]:.4f}')
+
+            sched_nat.step()
+            sched_man.step()
 
         torch.save(m_nature.state_dict(), f'{args.model_dir}/wrn_nature_final.pt')
         torch.save(m_manmade.state_dict(), f'{args.model_dir}/wrn_manmade_final.pt')
