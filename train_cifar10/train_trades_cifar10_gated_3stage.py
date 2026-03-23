@@ -304,6 +304,19 @@ def main():
         batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True
     )
 
+    # Sub-task test loaders for Stage 1 test accuracy
+    test_set_sub = torchvision.datasets.CIFAR10(
+        root='../data', train=False, download=True, transform=transform_test
+    )
+    test_loader_4 = torch.utils.data.DataLoader(
+        CIFARSubset(test_set_sub, VEHICLE_CLASSES),
+        batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True
+    )
+    test_loader_6 = torch.utils.data.DataLoader(
+        CIFARSubset(test_set_sub, ANIMAL_CLASSES),
+        batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True
+    )
+
     # ================= Resume =================
     resume_path = args.resume
     if resume_path == 'auto':
@@ -343,7 +356,25 @@ def main():
         for ep in range(1, args.epochs_sub + 1):
             l4, a4 = train_ce_epoch(m4, train_loader_4, opt4, device)
             l6, a6 = train_ce_epoch(m6, train_loader_6, opt6, device)
-            print(f'[Stage1][{ep}/{args.epochs_sub}] 4c acc={a4*100:.2f}% | 6c acc={a6*100:.2f}%')
+
+            # Test accuracy on sub-task test sets
+            m4.eval()
+            m6.eval()
+            t4_correct, t4_total = 0, 0
+            t6_correct, t6_total = 0, 0
+            with torch.no_grad():
+                for x, y in test_loader_4:
+                    x, y = x.to(device), y.to(device)
+                    t4_correct += (m4(x).argmax(1) == y).sum().item()
+                    t4_total += y.size(0)
+                for x, y in test_loader_6:
+                    x, y = x.to(device), y.to(device)
+                    t6_correct += (m6(x).argmax(1) == y).sum().item()
+                    t6_total += y.size(0)
+            ta4 = t4_correct / t4_total
+            ta6 = t6_correct / t6_total
+
+            print(f'[Stage1][{ep}/{args.epochs_sub}] 4c train={a4*100:.2f}% test={ta4*100:.2f}% | 6c train={a6*100:.2f}% test={ta6*100:.2f}%')
 
         torch.save(m4.state_dict(), f'{args.model_dir}/wrn4_final.pt')
         torch.save(m6.state_dict(), f'{args.model_dir}/wrn6_final.pt')

@@ -379,6 +379,19 @@ def main():
         batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True
     )
 
+    # Sub-task test loaders for Stage 1 test accuracy
+    test_set_sub = torchvision.datasets.CIFAR100(
+        root='../data', train=False, download=True, transform=transform_test
+    )
+    test_loader_nature = torch.utils.data.DataLoader(
+        CIFARFineSubset(test_set_sub, fine_nature),
+        batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True
+    )
+    test_loader_manmade = torch.utils.data.DataLoader(
+        CIFARFineSubset(test_set_sub, fine_manmade),
+        batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True
+    )
+
     # ================= Resume =================
     resume_path = args.resume
     if resume_path == 'auto':
@@ -421,7 +434,25 @@ def main():
         for ep in range(1, args.epochs_sub + 1):
             l_nat, a_nat = train_ce_epoch(m_nature, train_loader_nature, opt_nat, device)
             l_man, a_man = train_ce_epoch(m_manmade, train_loader_manmade, opt_man, device)
-            print(f'[Stage1][{ep}/{args.epochs_sub}] nature acc={a_nat*100:.2f}% | manmade acc={a_man*100:.2f}%')
+
+            # Test accuracy on sub-task test sets
+            m_nature.eval()
+            m_manmade.eval()
+            t_nat_correct, t_nat_total = 0, 0
+            t_man_correct, t_man_total = 0, 0
+            with torch.no_grad():
+                for x, y in test_loader_nature:
+                    x, y = x.to(device), y.to(device)
+                    t_nat_correct += (m_nature(x).argmax(1) == y).sum().item()
+                    t_nat_total += y.size(0)
+                for x, y in test_loader_manmade:
+                    x, y = x.to(device), y.to(device)
+                    t_man_correct += (m_manmade(x).argmax(1) == y).sum().item()
+                    t_man_total += y.size(0)
+            ta_nat = t_nat_correct / t_nat_total
+            ta_man = t_man_correct / t_man_total
+
+            print(f'[Stage1][{ep}/{args.epochs_sub}] nature train={a_nat*100:.2f}% test={ta_nat*100:.2f}% | manmade train={a_man*100:.2f}% test={ta_man*100:.2f}%')
 
         torch.save(m_nature.state_dict(), f'{args.model_dir}/wrn_nature_final.pt')
         torch.save(m_manmade.state_dict(), f'{args.model_dir}/wrn_manmade_final.pt')
