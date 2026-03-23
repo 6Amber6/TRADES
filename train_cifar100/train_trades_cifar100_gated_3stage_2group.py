@@ -573,8 +573,8 @@ def main():
         if 'ema_shadow' in checkpoint:
             ema.shadow = checkpoint['ema_shadow']
 
-    # Freeze BN at start of Stage 3
-    freeze_bn(fusion)
+    # BN stays in training mode throughout Stage 3 (no freeze)
+    # Freezing BN causes collapse when experts were trained with LR decay
 
     milestones = [args.epochs_fusion // 2, int(args.epochs_fusion * 0.75)]
     scheduler = MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
@@ -586,15 +586,8 @@ def main():
         for _ in range(1, stage3_start):
             scheduler.step()
 
-    bn_unfrozen = stage3_start > 40
-    if bn_unfrozen:
-        unfreeze_bn(fusion)
-        print(f'[INFO] Resumed past epoch 40, BN already unfrozen')
-
     for ep in range(stage3_start, args.epochs_fusion + 1):
         fusion.train()
-        if not bn_unfrozen:
-            freeze_bn(fusion)
 
         ratio = backbone_lr_ratio(ep, args.epochs_fusion)
         cur_fc_lr = optimizer.param_groups[0]['lr']
@@ -626,12 +619,6 @@ def main():
             torch.nn.utils.clip_grad_norm_(fusion.parameters(), 5.0)
             optimizer.step()
             ema.update(fusion)
-
-        # Unfreeze BN after 40 TRADES epochs
-        if not bn_unfrozen and ep >= 40:
-            unfreeze_bn(fusion)
-            bn_unfrozen = True
-            print(f'[INFO] Unfroze BN at epoch {ep}')
 
         scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']
