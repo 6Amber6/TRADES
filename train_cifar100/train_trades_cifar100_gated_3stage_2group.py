@@ -431,8 +431,9 @@ def main():
         opt_man = optim.SGD(m_manmade.parameters(), lr=args.lr,
                             momentum=args.momentum, weight_decay=args.weight_decay)
 
-        # LR decay for Stage 1: milestones at 50 and 65
-        sub_milestones = [int(args.epochs_sub * 0.625), int(args.epochs_sub * 0.8125)]
+        # LR decay for Stage 1: single decay at 75% to avoid too-sharp minimum
+        # (two decays → final lr=0.001, causing 20x jump in Stage 3 backbone_lr=0.02)
+        sub_milestones = [int(args.epochs_sub * 0.75)]
         sched_nat = MultiStepLR(opt_nat, milestones=sub_milestones, gamma=0.1)
         sched_man = MultiStepLR(opt_man, milestones=sub_milestones, gamma=0.1)
         print(f'[Stage1] LR milestones: {sub_milestones}')

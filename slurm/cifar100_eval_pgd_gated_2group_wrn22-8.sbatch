@@ -16,7 +16,7 @@ export PYTHONPATH="$PWD:$PYTHONPATH"
 export PYTHONUNBUFFERED=1
 
 stdbuf -oL python -u pgd_attack_cifar100/pgd_attack_cifar100_gated_2group.py \
-  --model-path ./model-cifar100-gated-3stage-2group-wrn22-8/fusion-epoch100.pt \
+  --model-path ./model-cifar100-gated-3stage-2group-wrn22-8/fusion-epoch90.pt \
   --epsilon 0.031 \
   --num-steps 20 \
   --step-size 0.003 \
