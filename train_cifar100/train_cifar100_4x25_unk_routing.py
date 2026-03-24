@@ -293,7 +293,7 @@ parser.add_argument('--epsilon', type=float, default=0.031)
 parser.add_argument('--num-steps', type=int, default=10)
 parser.add_argument('--step-size', type=float, default=0.007)
 parser.add_argument('--beta', type=float, default=6.0)
-parser.add_argument('--sub-depth', type=int, default=28, choices=[28, 34])
+parser.add_argument('--sub-depth', type=int, default=28, choices=[22, 28, 34])
 parser.add_argument('--sub-widen', type=int, default=8, choices=[4, 8, 10])
 parser.add_argument('--aux-weight', type=float, default=0.05)
 parser.add_argument('--aux-unknown-weight', type=float, default=0.3,
@@ -427,9 +427,11 @@ def main():
             print(f'  {group_names[i]}: known={len(subset.known_indices)}, unknown={len(subset.unknown_indices)}')
             m = submodels[i]
             opt = optim.SGD(m.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+            sched = MultiStepLR(opt, milestones=[40], gamma=0.1)
             for ep in range(1, args.epochs_sub + 1):
                 _, a = train_ce_epoch(m, loader, opt, device)
-                print(f'[Sub][{ep}] {group_names[i]} acc={a*100:.2f}%')
+                sched.step()
+                print(f'[Sub][{ep}] {group_names[i]} acc={a*100:.2f}%, lr={opt.param_groups[0]["lr"]:.6f}')
             torch.save(m.state_dict(), f'{args.model_dir}/wrn_{group_names[i]}_final.pt')
             m.to('cpu')
             if torch.cuda.is_available():
