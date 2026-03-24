@@ -32,7 +32,5 @@ stdbuf -oL python -u train_cifar100/train_cifar100_4x25_unk_routing.py \
   --aux-unknown-weight 0.3 \
   --route-a 1.0 \
   --route-b 0.5 \
-  --route-T-start 1.0 \
-  --route-T-end 0.2 \
   --scheduler step \
   --model-dir ./model-cifar100-4x25-unk-wrn22-8
