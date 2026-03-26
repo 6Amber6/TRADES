@@ -154,23 +154,6 @@ class ParallelFusionWRN100(nn.Module):
 
 
 # =========================================================
-# Aux loss for 4 meta-groups
-# =========================================================
-def aux_ce_loss(group_logits, y, group_defs, fine_to_coarse_t, weight=0.1):
-    loss = 0.0
-    for i, g in enumerate(group_defs):
-        logits = group_logits[i]
-        if logits is None:
-            continue
-        coarse_y = fine_to_coarse_t[y]
-        mask = torch.isin(coarse_y, g["coarse_t"])
-        if mask.any():
-            y_group = g["map_t"][y[mask]]
-            loss += F.cross_entropy(logits[mask], y_group)
-    return weight * loss
-
-
-# =========================================================
 # Backbone LR ratio schedule (Stage 2)
 # =========================================================
 def backbone_lr_ratio(epoch, total_epochs, r1=0.15, r2=0.5, r3=0.35):
@@ -187,7 +170,7 @@ def backbone_lr_ratio(epoch, total_epochs, r1=0.15, r2=0.5, r3=0.35):
 # Arguments
 # =========================================================
 parser = argparse.ArgumentParser(description='TRADES Parallel WRN CIFAR-100 (4-group) Training')
-parser.add_argument('--epochs-sub', type=int, default=120)
+parser.add_argument('--epochs-sub', type=int, default=80)
 parser.add_argument('--epochs-fusion', type=int, default=100)
 parser.add_argument('--batch-size', type=int, default=128)
 parser.add_argument('--lr', type=float, default=0.1)
@@ -199,8 +182,7 @@ parser.add_argument('--step-size', type=float, default=0.007)
 parser.add_argument('--beta', type=float, default=6.0)
 parser.add_argument('--sub-depth', type=int, default=28, choices=[28, 34])
 parser.add_argument('--sub-widen', type=int, default=8, choices=[4, 8, 10])
-parser.add_argument('--aux-weight', type=float, default=0.1)
-parser.add_argument('--scheduler', type=str, default='step', choices=['step', 'cosine', 'none'])
+parser.add_argument('--scheduler', type=str, default='cosine', choices=['step', 'cosine', 'none'])
 parser.add_argument('--model-dir', default='./model-cifar100-parallel')
 args = parser.parse_args()
 
@@ -229,6 +211,50 @@ def train_ce_epoch(model, loader, optimizer, device):
 
 def build_fine_classes_for_group(group_coarse):
     return [i for i, c in enumerate(CIFAR100_FINE_TO_COARSE) if c in group_coarse]
+
+
+def eval_clean(model, loader, device):
+    model.eval()
+    correct, total = 0, 0
+    with torch.no_grad():
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            correct += (model(x).argmax(1) == y).sum().item()
+            total += y.size(0)
+    return correct / total
+
+
+def eval_robust(model, loader, epsilon, device, num_steps=20, step_size=0.003):
+    model.eval()
+    mean_t = torch.tensor(CIFAR100_MEAN, device=device).view(1, 3, 1, 1)
+    std_t = torch.tensor(CIFAR100_STD, device=device).view(1, 3, 1, 1)
+    low = (0.0 - mean_t) / std_t
+    high = (1.0 - mean_t) / std_t
+    eps = epsilon / std_t
+    step = step_size / std_t
+
+    clean_correct, robust_correct, total = 0, 0, 0
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        with torch.no_grad():
+            clean_correct += (model(x).argmax(1) == y).sum().item()
+
+        x_adv = x.clone().detach()
+        x_adv = x_adv + torch.empty_like(x_adv).uniform_(-1, 1) * eps
+        x_adv = torch.max(torch.min(x_adv, high), low)
+        for _ in range(num_steps):
+            x_adv.requires_grad_(True)
+            loss = F.cross_entropy(model(x_adv), y)
+            grad = torch.autograd.grad(loss, x_adv)[0]
+            x_adv = x_adv.detach() + step * grad.sign()
+            x_adv = x.detach() + torch.clamp(x_adv - x.detach(), -eps, eps)
+            x_adv = torch.max(torch.min(x_adv, high), low).detach()
+
+        with torch.no_grad():
+            robust_correct += (model(x_adv).argmax(1) == y).sum().item()
+        total += y.size(0)
+
+    return clean_correct / total, robust_correct / total
 
 
 # =========================================================
@@ -290,15 +316,38 @@ def main():
         batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True
     )
 
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(CIFAR100_MEAN, CIFAR100_STD),
+    ])
+    testset = torchvision.datasets.CIFAR100(
+        root='../data', train=False, download=True, transform=transform_test
+    )
+    test_loader = torch.utils.data.DataLoader(
+        testset, batch_size=200, shuffle=False, num_workers=2, pin_memory=True
+    )
+
+    group_test_loaders = []
+    for fine_classes in group_fine:
+        tl = torch.utils.data.DataLoader(
+            CIFARFineSubset(testset, fine_classes),
+            batch_size=200, shuffle=False, num_workers=2, pin_memory=True
+        )
+        group_test_loaders.append(tl)
+
     # ================= Stage 1 =================
     submodels = []
     print('==== Stage 1 (CIFAR-100 fine, 4 groups) ====')
     for i, loader in enumerate(group_loaders):
         m = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=len(group_fine[i])).to(device)
         opt = optim.SGD(m.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+        sub_scheduler = CosineAnnealingLR(opt, T_max=args.epochs_sub, eta_min=0.01)
         for ep in range(1, args.epochs_sub + 1):
             _, a = train_ce_epoch(m, loader, opt, device)
-            print(f'[Sub][{ep}] {group_names[i]} acc={a*100:.2f}%')
+            sub_scheduler.step()
+            test_a = eval_clean(m, group_test_loaders[i], device)
+            m.train()
+            print(f'[Sub][{ep}] {group_names[i]} train_acc={a*100:.2f}%, test_acc={test_a*100:.2f}%, lr={opt.param_groups[0]["lr"]:.6f}')
         torch.save(m.state_dict(), f'{args.model_dir}/wrn_{group_names[i]}_final.pt')
         m.to('cpu')
         submodels.append(m)
@@ -333,29 +382,29 @@ def main():
 
     ema = EMA(fusion, decay=0.999)
 
-    # Precompute maps for aux loss
-    fine_to_coarse_t = torch.tensor(CIFAR100_FINE_TO_COARSE, device=device, dtype=torch.long)
-    group_defs = []
-    for coarse_ids, fine_ids in zip(group_coarse, group_fine):
-        coarse_t = torch.tensor(coarse_ids, device=device, dtype=torch.long)
-        map_t = torch.full((100,), -1, device=device, dtype=torch.long)
-        map_t[torch.tensor(fine_ids, device=device)] = torch.arange(len(fine_ids), device=device)
-        group_defs.append({"coarse_t": coarse_t, "map_t": map_t})
+    if torch.cuda.device_count() > 1:
+        fusion_dp = nn.DataParallel(fusion)
+        print(f"Using {torch.cuda.device_count()} GPUs with DataParallel")
+    else:
+        fusion_dp = fusion
 
     # -------- CE warmup (10 epochs, BN NOT frozen) --------
     print('==== CE warmup (10 epochs) ====')
     for ep in range(1, 11):
-        fusion.train()
+        fusion_dp.train()
         for x, y in train_loader_100:
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
-            out = fusion(x)
+            out = fusion_dp(x)
             loss = F.cross_entropy(out, y)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(fusion.parameters(), 5.0)
             optimizer.step()
             ema.update(fusion)
-        print(f'[Warmup] Epoch {ep}/10, lr={optimizer.param_groups[0]["lr"]:.6f}')
+        ema.apply_to(fusion)
+        test_a = eval_clean(fusion, test_loader, device)
+        ema.restore(fusion)
+        print(f'[Warmup] Epoch {ep}/10, test_acc={test_a*100:.2f}%, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
     # -------- Freeze BN AFTER warmup --------
     freeze_bn(fusion)
@@ -370,7 +419,7 @@ def main():
     else:
         scheduler = None
     for ep in range(1, args.epochs_fusion + 1):
-        fusion.train()
+        fusion_dp.train()
         total, correct = 0, 0
         total_loss = 0.0
 
@@ -384,7 +433,7 @@ def main():
             optimizer.zero_grad()
 
             loss = trades_loss(
-                model=fusion,
+                model=fusion_dp,
                 x_natural=x,
                 y=y,
                 optimizer=optimizer,
@@ -396,9 +445,6 @@ def main():
                 data_std=CIFAR100_STD
             )
 
-            aux_logits, _ = fusion(x, return_aux=True)
-            loss += aux_ce_loss(aux_logits, y, group_defs, fine_to_coarse_t, weight=args.aux_weight)
-
             loss.backward()
             torch.nn.utils.clip_grad_norm_(fusion.parameters(), 5.0)
             optimizer.step()
@@ -407,7 +453,7 @@ def main():
             total_loss += loss.item() * x.size(0)
             with torch.no_grad():
                 ema.apply_to(fusion)
-                pred = fusion(x).argmax(1)
+                pred = fusion_dp(x).argmax(1)
                 ema.restore(fusion)
                 correct += (pred == y).sum().item()
                 total += y.size(0)
@@ -417,25 +463,35 @@ def main():
 
         acc = correct / total
         avg_loss = total_loss / total
-        print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] train_acc={acc*100:.2f}%, train_loss={avg_loss:.4f}, lr={optimizer.param_groups[0]["lr"]:.6f}')
-
-        if ep == args.epochs_fusion:
-            with torch.no_grad():
-                for n, p in fusion.named_parameters():
-                    if n in ema.shadow:
-                        p.data.copy_(ema.shadow[n])
-            print('[INFO] Applied EMA weights to final checkpoint')
+        ema.apply_to(fusion)
+        test_a = eval_clean(fusion, test_loader, device)
+        ema.restore(fusion)
+        fusion.train()
+        print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] train_acc={acc*100:.2f}%, test_acc={test_a*100:.2f}%, train_loss={avg_loss:.4f}, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
         if ep >= 41:
+            ema.apply_to(fusion)
             torch.save(
                 {
                     "state_dict": fusion.state_dict(),
                     "group_order": GROUP_ORDER,
                     "coarse_groups": COARSE_GROUPS,
                     "args": vars(args),
+                    "epoch": ep,
                 },
-                f'{args.model_dir}/fusion-epoch{ep}.pt'
+                f'{args.model_dir}/fusion-ema-epoch{ep}.pt'
             )
+            ema.restore(fusion)
+
+        if ep % 20 == 0 or ep == args.epochs_fusion:
+            ema.apply_to(fusion)
+            clean_acc, robust_acc = eval_robust(
+                fusion, test_loader, args.epsilon, device,
+                num_steps=40, step_size=0.003
+            )
+            ema.restore(fusion)
+            fusion.train()
+            print(f'[Eval][{ep}] clean={clean_acc*100:.2f}%, PGD-40={robust_acc*100:.2f}%')
 
 
 if __name__ == '__main__':
