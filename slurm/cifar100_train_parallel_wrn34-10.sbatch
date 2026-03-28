@@ -29,4 +29,5 @@ stdbuf -oL python -u train_cifar100/train_trades_cifar100_parallel_warmup_ema_au
   --sub-depth 34 \
   --sub-widen 10 \
   --scheduler cosine \
-  --model-dir ./model-cifar100-parallel-wrn34-10
+  --model-dir ./model-cifar100-parallel-wrn34-10 \
+  --resume

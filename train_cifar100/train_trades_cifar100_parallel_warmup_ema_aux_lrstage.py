@@ -186,6 +186,7 @@ parser.add_argument('--sub-depth', type=int, default=28, choices=[28, 34])
 parser.add_argument('--sub-widen', type=int, default=8, choices=[4, 8, 10])
 parser.add_argument('--scheduler', type=str, default='cosine', choices=['step', 'cosine', 'none'])
 parser.add_argument('--model-dir', default='./model-cifar100-parallel')
+parser.add_argument('--resume', action='store_true', help='Resume training from latest checkpoint')
 args = parser.parse_args()
 
 
@@ -339,22 +340,33 @@ def main():
 
     # ================= Stage 1 =================
     submodels = []
-    print('==== Stage 1 (CIFAR-100 fine, 4 groups) ====')
-    for i, loader in enumerate(group_loaders):
-        m = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=len(group_fine[i])).to(device)
-        opt = optim.SGD(m.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-        sub_scheduler = CosineAnnealingLR(opt, T_max=args.epochs_sub, eta_min=0.01)
-        for ep in range(1, args.epochs_sub + 1):
-            _, a = train_ce_epoch(m, loader, opt, device)
-            sub_scheduler.step()
-            test_a = eval_clean(m, group_test_loaders[i], device)
-            m.train()
-            print(f'[Sub][{ep}] {group_names[i]} train_acc={a*100:.2f}%, test_acc={test_a*100:.2f}%, lr={opt.param_groups[0]["lr"]:.6f}')
-        torch.save(m.state_dict(), f'{args.model_dir}/wrn_{group_names[i]}_final.pt')
-        m.to('cpu')
-        submodels.append(m)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+    stage1_files = [f'{args.model_dir}/wrn_{name}_final.pt' for name in group_names]
+    stage1_done = args.resume and all(os.path.exists(f) for f in stage1_files)
+
+    if stage1_done:
+        print('==== Stage 1: Loading saved submodels ====')
+        for i, name in enumerate(group_names):
+            m = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=len(group_fine[i]))
+            m.load_state_dict(torch.load(stage1_files[i], map_location='cpu'))
+            submodels.append(m)
+            print(f'  Loaded {name} from {stage1_files[i]}')
+    else:
+        print('==== Stage 1 (CIFAR-100 fine, 4 groups) ====')
+        for i, loader in enumerate(group_loaders):
+            m = WRNWithEmbedding(depth=args.sub_depth, widen_factor=args.sub_widen, num_classes=len(group_fine[i])).to(device)
+            opt = optim.SGD(m.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+            sub_scheduler = CosineAnnealingLR(opt, T_max=args.epochs_sub, eta_min=0.01)
+            for ep in range(1, args.epochs_sub + 1):
+                _, a = train_ce_epoch(m, loader, opt, device)
+                sub_scheduler.step()
+                test_a = eval_clean(m, group_test_loaders[i], device)
+                m.train()
+                print(f'[Sub][{ep}] {group_names[i]} train_acc={a*100:.2f}%, test_acc={test_a*100:.2f}%, lr={opt.param_groups[0]["lr"]:.6f}')
+            torch.save(m.state_dict(), f'{args.model_dir}/wrn_{group_names[i]}_final.pt')
+            m.to('cpu')
+            submodels.append(m)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     # ================= Stage 2 =================
     for m in submodels:
@@ -390,26 +402,48 @@ def main():
     else:
         fusion_dp = fusion
 
-    # -------- CE warmup (10 epochs, BN NOT frozen) --------
-    print('==== CE warmup (10 epochs) ====')
-    for ep in range(1, 11):
-        fusion_dp.train()
-        for x, y in train_loader_100:
-            x, y = x.to(device), y.to(device)
-            optimizer.zero_grad()
-            out = fusion_dp(x)
-            loss = F.cross_entropy(out, y)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(fusion.parameters(), 5.0)
-            optimizer.step()
-            ema.update(fusion)
-        ema.apply_to(fusion)
-        test_a = eval_clean(fusion, test_loader, device)
-        ema.restore(fusion)
-        print(f'[Warmup] Epoch {ep}/10, test_acc={test_a*100:.2f}%, lr={optimizer.param_groups[0]["lr"]:.6f}')
+    # -------- Resume check --------
+    resume_epoch = 0
+    best_robust = 0.0
+    resume_ckpt = None
+    if args.resume:
+        ckpt_path = f'{args.model_dir}/fusion-ema-latest.pt'
+        if os.path.exists(ckpt_path):
+            resume_ckpt = torch.load(ckpt_path, map_location=device)
+            if 'train_state_dict' in resume_ckpt:
+                resume_epoch = resume_ckpt.get('epoch', 0)
+                print(f'==== Resume: found checkpoint at epoch {resume_epoch} ====')
+            else:
+                print('Warning: checkpoint lacks resume info (old format), starting fresh')
+                resume_ckpt = None
 
-    # -------- Freeze BN AFTER warmup --------
-    freeze_bn(fusion)
+    if resume_ckpt is not None and resume_epoch > 0:
+        fusion.load_state_dict(resume_ckpt['train_state_dict'])
+        ema.shadow = resume_ckpt['ema_shadow']
+        optimizer.load_state_dict(resume_ckpt['optimizer_state_dict'])
+        best_robust = resume_ckpt.get('best_robust', 0.0)
+        freeze_bn(fusion)
+        print(f'  Restored: epoch={resume_epoch}, best_robust={best_robust*100:.2f}%')
+    else:
+        # -------- CE warmup (10 epochs, BN NOT frozen) --------
+        print('==== CE warmup (10 epochs) ====')
+        for ep in range(1, 11):
+            fusion_dp.train()
+            for x, y in train_loader_100:
+                x, y = x.to(device), y.to(device)
+                optimizer.zero_grad()
+                out = fusion_dp(x)
+                loss = F.cross_entropy(out, y)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(fusion.parameters(), 5.0)
+                optimizer.step()
+                ema.update(fusion)
+            ema.apply_to(fusion)
+            test_a = eval_clean(fusion, test_loader, device)
+            ema.restore(fusion)
+            print(f'[Warmup] Epoch {ep}/10, test_acc={test_a*100:.2f}%, lr={optimizer.param_groups[0]["lr"]:.6f}')
+        # -------- Freeze BN AFTER warmup --------
+        freeze_bn(fusion)
 
     # -------- TRADES training (base LR scheduled) --------
     print('==== TRADES training ====')
@@ -420,7 +454,13 @@ def main():
         scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs_fusion)
     else:
         scheduler = None
-    for ep in range(1, args.epochs_fusion + 1):
+
+    if resume_ckpt is not None and resume_epoch > 0:
+        if scheduler is not None and resume_ckpt.get('scheduler_state_dict'):
+            scheduler.load_state_dict(resume_ckpt['scheduler_state_dict'])
+        print(f'  Resuming TRADES from epoch {resume_epoch + 1}')
+
+    for ep in range(resume_epoch + 1, args.epochs_fusion + 1):
         fusion_dp.train()
         total, correct = 0, 0
         total_loss = 0.0
@@ -471,29 +511,59 @@ def main():
         fusion.train()
         print(f'[Fusion/TRADES][{ep}/{args.epochs_fusion}] train_acc={acc*100:.2f}%, test_acc={test_a*100:.2f}%, train_loss={avg_loss:.4f}, lr={optimizer.param_groups[0]["lr"]:.6f}')
 
-        if ep >= 41:
-            ema.apply_to(fusion)
-            torch.save(
-                {
-                    "state_dict": fusion.state_dict(),
-                    "group_order": GROUP_ORDER,
-                    "coarse_groups": COARSE_GROUPS,
-                    "args": vars(args),
-                    "epoch": ep,
-                },
-                f'{args.model_dir}/fusion-ema-epoch{ep}.pt'
-            )
-            ema.restore(fusion)
+        # Save latest checkpoint with full resume info
+        train_state = {k: v.clone() for k, v in fusion.state_dict().items()}
+        ema.apply_to(fusion)
+        ema_state = fusion.state_dict()
+        # Latest: includes both training weights and EMA for resume
+        ckpt_latest = {
+            "state_dict": ema_state,
+            "train_state_dict": train_state,
+            "ema_shadow": {k: v.clone() for k, v in ema.shadow.items()},
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
+            "best_robust": best_robust,
+            "group_order": GROUP_ORDER,
+            "coarse_groups": COARSE_GROUPS,
+            "args": vars(args),
+            "epoch": ep,
+        }
+        torch.save(ckpt_latest, f'{args.model_dir}/fusion-ema-latest.pt')
 
-        if ep % 20 == 0 or ep == args.epochs_fusion:
-            ema.apply_to(fusion)
+        if ep % 10 == 0 or ep == args.epochs_fusion:
             clean_acc, robust_acc = eval_robust(
                 fusion, test_loader, args.epsilon, device,
                 num_steps=40, step_size=0.003
             )
-            ema.restore(fusion)
-            fusion.train()
             print(f'[Eval][{ep}] clean={clean_acc*100:.2f}%, PGD-40={robust_acc*100:.2f}%')
+            if robust_acc > best_robust:
+                best_robust = robust_acc
+                ckpt_latest['best_robust'] = best_robust
+                # Best/final: EMA weights only (for eval, smaller file)
+                ckpt_eval = {
+                    "state_dict": ema_state,
+                    "group_order": GROUP_ORDER,
+                    "coarse_groups": COARSE_GROUPS,
+                    "args": vars(args),
+                    "epoch": ep,
+                }
+                torch.save(ckpt_eval, f'{args.model_dir}/fusion-ema-best.pt')
+                print(f'[Eval][{ep}] New best PGD-40={robust_acc*100:.2f}%, saved fusion-ema-best.pt')
+                # Also update latest with new best_robust
+                torch.save(ckpt_latest, f'{args.model_dir}/fusion-ema-latest.pt')
+
+        if ep == args.epochs_fusion:
+            ckpt_eval = {
+                "state_dict": ema_state,
+                "group_order": GROUP_ORDER,
+                "coarse_groups": COARSE_GROUPS,
+                "args": vars(args),
+                "epoch": ep,
+            }
+            torch.save(ckpt_eval, f'{args.model_dir}/fusion-ema-final.pt')
+
+        ema.restore(fusion)
+        fusion.train()
 
 
 if __name__ == '__main__':
