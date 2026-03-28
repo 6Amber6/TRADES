@@ -16,7 +16,7 @@ export PYTHONPATH="$PWD:$PYTHONPATH"
 export PYTHONUNBUFFERED=1
 
 stdbuf -oL python -u auto_attack/eval_autoattack_cifar100_parallel.py \
-  --model-path ./model-cifar100-parallel-wrn34-10/fusion-ema-epoch100.pt \
+  --model-path ./model-cifar100-parallel-wrn34-10/fusion-ema-epoch60.pt \
   --data-dir ./data \
   --epsilon 0.03137 \
   --version standard \
