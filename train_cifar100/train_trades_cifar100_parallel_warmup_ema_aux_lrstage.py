@@ -157,13 +157,15 @@ class ParallelFusionWRN100(nn.Module):
 # Backbone LR ratio schedule (Stage 2)
 # =========================================================
 def backbone_lr_ratio(epoch, total_epochs, r1=0.15, r2=0.5, r3=0.35):
-    p1 = max(1, int(total_epochs * 0.3))
-    p2 = max(p1 + 1, int(total_epochs * 0.7))
+    p1 = int(total_epochs * 0.4)   # ramp up end
+    p2 = int(total_epochs * 0.7)   # ramp down start
     if epoch <= p1:
-        return r1
+        # linear ramp: r1 -> r2 over [1, p1]
+        return r1 + (r2 - r1) * (epoch - 1) / max(p1 - 1, 1)
     if epoch <= p2:
         return r2
-    return r3
+    # linear ramp: r2 -> r3 over [p2+1, total_epochs]
+    return r2 + (r3 - r2) * (epoch - p2) / max(total_epochs - p2, 1)
 
 
 # =========================================================
@@ -423,7 +425,7 @@ def main():
         total, correct = 0, 0
         total_loss = 0.0
 
-        ratio = backbone_lr_ratio(ep, args.epochs_fusion, r1=0.15, r2=0.5, r3=0.35)
+        ratio = backbone_lr_ratio(ep, args.epochs_fusion)
         fusion_lr = optimizer.param_groups[0]['lr']
         for g in range(1, len(optimizer.param_groups)):
             optimizer.param_groups[g]['lr'] = fusion_lr * ratio

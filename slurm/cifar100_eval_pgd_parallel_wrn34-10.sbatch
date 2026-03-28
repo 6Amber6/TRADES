@@ -16,7 +16,7 @@ export PYTHONPATH="$PWD:$PYTHONPATH"
 export PYTHONUNBUFFERED=1
 
 stdbuf -oL python -u pgd_attack_cifar100/pgd_attack_cifar100_parallel_ema.py \
-  --model-path ./model-cifar100-parallel-wrn34-10/fusion-ema-epoch100.pt \
+  --model-path ./model-cifar100-parallel-wrn34-10/fusion-ema-epoch60.pt \
   --sub-depth 34 \
   --sub-widen 10 \
   --epsilon 0.031 \
