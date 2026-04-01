@@ -72,22 +72,22 @@ models/
   resnet.py                         #   Standard ResNet
 
 train_cifar10/
-  train_trades_cifar10.py                                       # TRADES baseline
-  train_trades_cifar10_parallel_warmup_ema_aux_lrstage.py       # Concat + FC
-  train_trades_cifar10_parallel_warmup_ema_aux_lrstage_gated.py # Feature-level gated
-  train_trades_cifar10_softrouting.py                           # a,b routing
-  train_trades_cifar10_softrouting_confidence.py                # Confidence-only routing
+  train_cifar10_baseline.py         # TRADES baseline
+  train_cifar10_concat.py           # Concat + FC
+  train_cifar10_gated.py            # Feature-level gated
+  train_cifar10_routing_ab.py       # a,b routing
+  train_cifar10_routing_conf.py     # Confidence-only routing
 
 train_cifar100/
-  train_trades_cifar100.py                                       # TRADES baseline
-  train_trades_cifar100_parallel_warmup_ema_aux_lrstage.py       # Concat + FC
-  train_trades_cifar100_parallel_warmup_ema_aux_lrstage_gated.py # Feature-level gated
-  train_cifar100_4x25_unk_routing.py                             # a,b routing (4 experts)
-  train_cifar100_4x25_unk_routing_uniform.py                     # Uniform routing (4 experts)
+  train_cifar100_baseline.py        # TRADES baseline
+  train_cifar100_concat.py          # Concat + FC
+  train_cifar100_gated.py           # Feature-level gated
+  train_cifar100_routing_ab.py      # a,b routing (4 experts)
+  train_cifar100_routing_uniform.py # Uniform routing (4 experts)
 
-pgd_attack_cifar10/                 # PGD-20 evaluation scripts (CIFAR-10)
-pgd_attack_cifar100/                # PGD-20 evaluation scripts (CIFAR-100)
-auto_attack/                        # AutoAttack evaluation scripts
+pgd_attack_cifar10/                 # PGD-20 evaluation (eval_pgd_cifar10_*.py)
+pgd_attack_cifar100/                # PGD-20 evaluation (eval_pgd_cifar100_*.py)
+auto_attack/                        # AutoAttack evaluation (eval_aa_*.py)
 slurm/                              # SLURM job scripts (WRN-34-10)
 ```
 
