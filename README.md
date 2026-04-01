@@ -58,10 +58,8 @@ Classes are split into **Vehicles** {airplane, automobile, ship, truck} and **An
 
 ## Key Findings
 
-- All parallel expert methods significantly outperform the single-model TRADES baseline in both clean accuracy (+3~4%) and PGD-20 robustness (+3~4%).
 - AutoAttack improvements are more modest (+1.7~2.3%), suggesting some of the PGD-20 gains come from obfuscated gradients inherent to multi-network fusion.
 - **Confidence-only routing** achieves the best AutoAttack accuracy (53.66%) with the simplest routing mechanism, indicating that complex routing may not be necessary.
-- Feature-level gated fusion achieves the highest clean accuracy (89.13%) but slightly lower adversarial robustness than logit-level routing.
 
 ## Project Structure
 
@@ -100,57 +98,6 @@ slurm/                              # SLURM job scripts (WRN-34-10)
 - torchvision
 - numpy
 - [autoattack](https://github.com/fra31/auto-attack) (`pip install autoattack`)
-
-## Usage
-
-### Training
-
-All training scripts should be run from the repository root:
-
-```bash
-# CIFAR-10: TRADES baseline
-python train_cifar10/train_trades_cifar10.py \
-  --epochs 76 --batch-size 128 --lr 0.1 \
-  --epsilon 0.031 --num-steps 10 --step-size 0.007 \
-  --beta 6.0 --model-dir ./model-cifar10-baseline
-
-# CIFAR-10: Parallel Concat + FC (two-stage)
-python train_cifar10/train_trades_cifar10_parallel_warmup_ema_aux_lrstage.py \
-  --epochs-sub 100 --epochs-fusion 100 \
-  --batch-size 128 --lr 0.1 --beta 6.0 \
-  --arch wrn34-10 --model-dir ./model-cifar10-parallel
-
-# CIFAR-10: Feature-level Gated Fusion
-python train_cifar10/train_trades_cifar10_parallel_warmup_ema_aux_lrstage_gated.py \
-  --epochs-sub 35 --epochs-fusion 100 \
-  --batch-size 128 --lr 0.1 --beta 6.0 \
-  --model-dir ./model-cifar10-gated
-
-# CIFAR-10: Soft Routing (a,b)
-python train_cifar10/train_trades_cifar10_softrouting.py \
-  --epochs-sub 100 --epochs-fusion 100 \
-  --batch-size 128 --lr 0.1 --beta 6.0 \
-  --model-dir ./model-cifar10-softrouting
-
-# CIFAR-10: Confidence-only Routing
-python train_cifar10/train_trades_cifar10_softrouting_confidence.py \
-  --epochs-sub 100 --epochs-fusion 100 \
-  --batch-size 128 --lr 0.1 --beta 6.0 \
-  --model-dir ./model-cifar10-confidence
-```
-
-### Evaluation
-
-```bash
-# PGD-20 attack evaluation
-python pgd_attack_cifar10/pgd_attack_cifar10.py \
-  --model-path <checkpoint>
-
-# AutoAttack evaluation (standard)
-python auto_attack/eval_autoattack_cifar10.py \
-  --model-path <checkpoint> \
-  --epsilon 0.03137 --version standard --batch-size 128
-```
 
 ## Hyperparameters
 
