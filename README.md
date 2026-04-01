@@ -58,7 +58,7 @@ Classes are split into **Vehicles** {airplane, automobile, ship, truck} and **An
 
 ## Key Findings
 
-- AutoAttack improvements are more modest (+1.7~2.3%), suggesting some of the PGD-20 gains come from obfuscated gradients inherent to multi-network fusion.
+- All parallel expert methods outperform the single-model TRADES baseline in clean accuracy (+3~4.5%), PGD-20 robustness (+3~4%), and AutoAttack accuracy (+1.7~2.3%).
 - **Confidence-only routing** achieves the best AutoAttack accuracy (53.66%) with the simplest routing mechanism, indicating that complex routing may not be necessary.
 
 ## Project Structure
